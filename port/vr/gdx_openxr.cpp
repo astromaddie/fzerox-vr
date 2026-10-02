@@ -28,6 +28,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <vector>
 
 #include "../gdx_input_script.h" // GdxInputPad
@@ -42,6 +43,11 @@ extern "C" void gdx_interp_mark_cut_src(const char* tag);
 extern "C" void (*gfx_pre_present_hook)(void);
 extern "C" int32_t CVarGetInteger(const char* name, int32_t defaultValue);
 extern "C" float CVarGetFloat(const char* name, float defaultValue);
+extern "C" void CVarSetInteger(const char* name, int32_t value);
+extern "C" void CVarSetFloat(const char* name, float value);
+extern "C" void CVarRegisterInteger(const char* name, int32_t defaultValue);
+extern "C" void CVarRegisterFloat(const char* name, float defaultValue);
+extern "C" void CVarSave();
 // decomp globals (decomp/include/fzx_game.h).
 extern "C" int gGameMode;
 extern "C" int gNumPlayers;
@@ -256,6 +262,67 @@ State& S() {
 double NowMs() {
     using namespace std::chrono;
     return duration<double, std::milli>(steady_clock::now().time_since_epoch()).count();
+}
+
+// --- Settings (gEnhancements.VR.* CVars) -----------------------------------------------------------
+//
+// libultraship keeps CVars in the config file (CVarSave writes every CVar, Context startup loads
+// them), but only values someone saved are in it, and nothing here ever set these. So the first VR
+// launch registers every key with its default and saves, which makes them appear (and persist) in
+// the config file; later launches load whatever is there. Anything out of range (a hand-edited
+// file, NaN) is clamped on load and written back, and every read clamps again because a later
+// settings UI or a console command can write any value. Ranges are in gdx_vr_system.cpp.
+
+int SettingInt(SettingId id) {
+    const SettingInfo& si = Setting(id);
+    return (int)SanitizeSetting(id, (double)CVarGetInteger(si.cvar, (int32_t)si.def));
+}
+
+float SettingFloat(SettingId id) {
+    const SettingInfo& si = Setting(id);
+    return (float)SanitizeSetting(id, (double)CVarGetFloat(si.cvar, (float)si.def));
+}
+
+void InitSettings() {
+    // libultraship's typed getters ignore a CVar of the other type (a hand-edited `"HudHeight": 2`
+    // loads as an integer), so a value of the wrong type is read through the other getter and
+    // rewritten with the right type instead of being dropped.
+    const int32_t kAbsent = INT32_MIN;
+    const float kNaN = std::numeric_limits<float>::quiet_NaN();
+    bool dirty = false;
+    for (int i = 0; i < kSettingCount; i++) {
+        const SettingId id = (SettingId)i;
+        const SettingInfo& si = Setting(id);
+        const int32_t asInt = CVarGetInteger(si.cvar, kAbsent);
+        const float asFloat = CVarGetFloat(si.cvar, kNaN);
+        const bool haveInt = asInt != kAbsent;
+        const bool haveFloat = !std::isnan(asFloat);
+        if (!haveInt && !haveFloat) {
+            si.isInteger ? CVarRegisterInteger(si.cvar, (int32_t)si.def) : CVarRegisterFloat(si.cvar, (float)si.def);
+            dirty = true;
+            continue;
+        }
+        const double raw = si.isInteger ? (haveInt ? (double)asInt : (double)asFloat)
+                                        : (haveFloat ? (double)asFloat : (double)asInt);
+        const double fixed = SanitizeSetting(id, raw);
+        const bool wrongType = si.isInteger ? !haveInt : !haveFloat;
+        if (fixed != raw || wrongType) {
+            if (fixed != raw) {
+                gdx_port_logf("[vr] setting %s=%g out of range, clamped to %g\n", si.cvar, raw, fixed);
+            }
+            si.isInteger ? CVarSetInteger(si.cvar, (int32_t)fixed) : CVarSetFloat(si.cvar, (float)fixed);
+            dirty = true;
+        }
+    }
+    if (dirty) {
+        CVarSave();
+    }
+    gdx_port_logf("[vr] settings: stereo=%d wide_cull=%d camera_mode=%d horizon_lock=%d level_pitch=%d "
+                  "hud_aspect=%.3f hud_height=%.2f nose_forward=%.1f nose_up=%.1f world_scale=%.1f%s\n",
+                  SettingInt(kSetStereo), SettingInt(kSetWideCull), SettingInt(kSetCameraMode),
+                  SettingInt(kSetHorizonLock), SettingInt(kSetLevelPitch), SettingFloat(kSetHudAspect), SettingFloat(kSetHudHeight),
+                  SettingFloat(kSetNoseForward), SettingFloat(kSetNoseUp), SettingFloat(kSetWorldScale),
+                  dirty ? " (saved)" : "");
 }
 
 // Ask for a recentre at the next stereo frame boundary (UpdateRecenter, from xrWaitFrame). Requests
@@ -686,6 +753,9 @@ void SyncInput() {
         RequestRecentre(gdx_vr::RecentreKind::Level, "camera toggle");
         gdx_interp_mark_cut_src("vr-camera-mode");
         gdx_port_logf("[openxr] camera -> %s\n", s.cockpit ? "cockpit" : "chase");
+        // The chosen view is the next launch's starting view.
+        CVarSetInteger(Setting(kSetCameraMode).cvar, s.cockpit ? 1 : 0);
+        CVarSave();
     }
     in.cameraModeHeld = cameraModeNow;
     float cx, cy;
@@ -726,6 +796,7 @@ void MergeXrInput(GdxInputPad* pad) {
 // context current. Any failure disables VR for the process and leaves desktop behaviour intact.
 bool CreateEverything() {
     State& s = S();
+    InitSettings();
 
     // XR_VALVE_frame_controller_interaction gives the Steam Frame controllers their own binding
     // profile; enabled when the runtime offers it.
@@ -880,10 +951,7 @@ bool CreateEverything() {
             return false;
         }
     }
-    float hudAspect = CVarGetFloat("gEnhancements.VR.HudAspect", 1.5f);
-    if (!(hudAspect >= 4.0f / 3.0f && hudAspect <= 4.0f)) {
-        hudAspect = 1.5f;
-    }
+    const float hudAspect = SettingFloat(kSetHudAspect);
     const int32_t hudWidth = ((int32_t)((float)kHudHeight * hudAspect) + 3) & ~3;
     if (!CreateSwapchain(s.hud, hudWidth, kHudHeight, "xrCreateSwapchain(hud)")) {
         return false;
@@ -911,7 +979,7 @@ bool CreateEverything() {
                   (long long)s.colorFormat, s.quad.width, s.quad.height);
 
     // Starting camera: gEnhancements.VR.CameraMode (0 chase, 1 cockpit); GDX_VR_COCKPIT=1 for tests.
-    s.cockpit = CVarGetInteger("gEnhancements.VR.CameraMode", 0) == 1 || EnvFlag("GDX_VR_COCKPIT");
+    s.cockpit = SettingInt(kSetCameraMode) == 1 || EnvFlag("GDX_VR_COCKPIT");
     gdx_port_logf("[openxr] camera starts in %s view\n", s.cockpit ? "cockpit" : "chase");
     gfx_pre_present_hook = &PrePresentHook;
     Fast::Interpreter::SetVrWorldSpriteResolver([](uint32_t id, Fast::Interpreter::VrWorldSprite* out) {
@@ -1504,7 +1572,7 @@ void RenderHudLayer(const StereoCallbacks& cb) {
 
 bool StereoWanted() {
     State& s = S();
-    if (s.phase != Phase::Running || CVarGetInteger("gEnhancements.VR.Stereo", 1) == 0) {
+    if (s.phase != Phase::Running || SettingInt(kSetStereo) == 0) {
         return false;
     }
     if (gNumPlayers != 1 || !s.raceDrawnLastTick) {
@@ -1587,7 +1655,7 @@ bool BeginHostIteration() {
         s.raceDrawCountSeen = gGdxVrRaceDrawCount;
     }
     s.stereoThisTick = StereoWanted();
-    gGdxVrWideCull = (s.stereoThisTick && CVarGetInteger("gEnhancements.VR.WideCull", 1) != 0) ? 1 : 0;
+    gGdxVrWideCull = (s.stereoThisTick && SettingInt(kSetWideCull) != 0) ? 1 : 0;
     if (s.stereoThisTick != s.lastTickStereo) {
         gdx_port_logf("[openxr] presentation -> %s (mode=0x%02X players=%d)\n", s.stereoThisTick ? "stereo" : "flat",
                       gGameMode & 0x1F, gNumPlayers);
@@ -1746,10 +1814,7 @@ void PresentStereoTick(const StereoCallbacks& cb) {
                             hudLayer.subImage.imageRect.extent = { s.hud.width, s.hud.height };
                             hudLayer.pose.orientation = { 0.0f, 0.0f, 0.0f, 1.0f };
                             hudLayer.pose.position = { 0.0f, 0.0f, -kHudDistance };
-                            float hudHeight = CVarGetFloat("gEnhancements.VR.HudHeight", 1.2f);
-                            if (!(hudHeight >= 0.3f && hudHeight <= 3.0f)) {
-                                hudHeight = 1.2f;
-                            }
+                            const float hudHeight = SettingFloat(kSetHudHeight);
                             hudLayer.size.height = hudHeight;
                             hudLayer.size.width = hudHeight * (float)s.hud.width / (float)s.hud.height;
                             layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&hudLayer);
@@ -1788,8 +1853,8 @@ bool CockpitMode() {
 }
 
 void CockpitOffsets(float* forward, float* up) {
-    *forward = CVarGetFloat("gEnhancements.VR.NoseForward", 8.0f);
-    *up = CVarGetFloat("gEnhancements.VR.NoseUp", 6.0f);
+    *forward = SettingFloat(kSetNoseForward);
+    *up = SettingFloat(kSetNoseUp);
 }
 
 bool BuildActiveEyeProjView(const float eye[3], const float at[3], const float up[3], float nearZ, float farZ,
@@ -1804,7 +1869,7 @@ bool BuildActiveEyeProjView(const float eye[3], const float at[3], const float u
     // its forward onto the track plane: the viewer looks down at their machine like a drone behind.
     float lookAt[3] = { at[0], at[1], at[2] };
     float anchorUp[3] = { up[0], up[1], up[2] };
-    if (levelPitch && CVarGetInteger("gEnhancements.VR.LevelPitch", 1) != 0) {
+    if (levelPitch && SettingInt(kSetLevelPitch) != 0) {
         // The camera's own up is pitched with it, so level against the track's up instead.
         gdx_vr_camera_track_up(anchorUp);
         const float* up = anchorUp;
@@ -1826,7 +1891,7 @@ bool BuildActiveEyeProjView(const float eye[3], const float at[3], const float u
                           { anchorUp[0], anchorUp[1], anchorUp[2] }, &anchor)) {
         return false;
     }
-    if (CVarGetInteger("gEnhancements.VR.HorizonLock", 0) != 0) {
+    if (SettingInt(kSetHorizonLock) != 0) {
         // Comfort: keep the chase camera's heading and pitch but not its roll, so the viewer stays
         // level while the track banks. World up is +y. Near-vertical views (inside a loop) have no
         // usable horizon and keep the full camera frame.
@@ -1836,7 +1901,7 @@ bool BuildActiveEyeProjView(const float eye[3], const float at[3], const float u
             anchor = level;
         }
     }
-    const float unitsPerMeter = CVarGetFloat("gEnhancements.VR.WorldScale", 10.0f);
+    const float unitsPerMeter = SettingFloat(kSetWorldScale);
     EyeProjView(anchor, s.activeEye.pose, s.activeEye.fov, unitsPerMeter, nearZ, farZ, out);
     const Vec3 offset = AnchorToWorld(anchor, s.activeEye.pose.position);
     s.activeEye.worldPos = { anchor.origin.x + offset.x * unitsPerMeter, anchor.origin.y + offset.y * unitsPerMeter,

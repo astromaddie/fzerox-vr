@@ -141,19 +141,19 @@ static void CaseSettings() {
         }
         return true;
     }());
-    check("NaN falls back to the default", SanitizeSetting(kHudHeight, nan) == 1.2);
-    check("inf falls back to the default", SanitizeSetting(kWorldScale, inf) == 10.0);
-    check("-inf falls back to the default", SanitizeSetting(kStereo, -inf) == 1.0);
-    check("switch above range clamps to 1", SanitizeSetting(kHorizonLock, 7.0) == 1.0);
-    check("switch below range clamps to 0", SanitizeSetting(kStereo, -3.0) == 0.0);
-    check("switch rounds to nearest", SanitizeSetting(kWideCull, 0.4) == 0.0 && SanitizeSetting(kWideCull, 0.6) == 1.0);
-    check("zero world scale clamps up", SanitizeSetting(kWorldScale, 0.0) == 2.0);
-    check("huge world scale clamps down", SanitizeSetting(kWorldScale, 1e9) == 50.0);
-    check("HUD height clamps", SanitizeSetting(kHudHeight, 0.01) == 0.3 && SanitizeSetting(kHudHeight, 99.0) == 3.0);
-    check("HUD aspect clamps", std::fabs(SanitizeSetting(kHudAspect, 0.5) - 4.0 / 3.0) < 1e-12 &&
-                                   SanitizeSetting(kHudAspect, 10.0) == 4.0);
-    check("in-range value is untouched", SanitizeSetting(kNoseForward, 12.5) == 12.5);
-    check("negative nose offsets are allowed", SanitizeSetting(kNoseUp, -5.0) == -5.0);
+    check("NaN falls back to the default", SanitizeSetting(kSetHudHeight, nan) == 1.2);
+    check("inf falls back to the default", SanitizeSetting(kSetWorldScale, inf) == 10.0);
+    check("-inf falls back to the default", SanitizeSetting(kSetStereo, -inf) == 1.0);
+    check("switch above range clamps to 1", SanitizeSetting(kSetHorizonLock, 7.0) == 1.0);
+    check("switch below range clamps to 0", SanitizeSetting(kSetStereo, -3.0) == 0.0);
+    check("switch rounds to nearest", SanitizeSetting(kSetWideCull, 0.4) == 0.0 && SanitizeSetting(kSetWideCull, 0.6) == 1.0);
+    check("zero world scale clamps up", SanitizeSetting(kSetWorldScale, 0.0) == 2.0);
+    check("huge world scale clamps down", SanitizeSetting(kSetWorldScale, 1e9) == 50.0);
+    check("HUD height clamps", SanitizeSetting(kSetHudHeight, 0.01) == 0.3 && SanitizeSetting(kSetHudHeight, 99.0) == 3.0);
+    check("HUD aspect clamps", std::fabs(SanitizeSetting(kSetHudAspect, 0.5) - 4.0 / 3.0) < 1e-12 &&
+                                   SanitizeSetting(kSetHudAspect, 10.0) == 4.0);
+    check("in-range value is untouched", SanitizeSetting(kSetNoseForward, 12.5) == 12.5);
+    check("negative nose offsets are allowed", SanitizeSetting(kSetNoseUp, -5.0) == -5.0);
     check("all CVar names are in the gEnhancements.VR namespace", [] {
         for (int i = 0; i < kSettingCount; i++) {
             const char* n = Setting(static_cast<SettingId>(i)).cvar;

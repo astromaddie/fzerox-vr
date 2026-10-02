@@ -61,16 +61,16 @@ constexpr Haptic kSystemBuzz = { 0.6f, 80 }; // standard.md section 6, `system`,
 // gEnhancements.VR.* CVars. Registered with these defaults, clamped to [lo, hi] on load and on every
 // read (a hand-edited config or a later settings UI can write anything).
 enum SettingId {
-    kStereo,
-    kWideCull,
-    kCameraMode,
-    kHorizonLock,
-    kLevelPitch,
-    kHudAspect,
-    kHudHeight,
-    kNoseForward,
-    kNoseUp,
-    kWorldScale,
+    kSetStereo,
+    kSetWideCull,
+    kSetCameraMode,
+    kSetHorizonLock,
+    kSetLevelPitch,
+    kSetHudAspect,
+    kSetHudHeight,
+    kSetNoseForward,
+    kSetNoseUp,
+    kSetWorldScale,
     kSettingCount
 };
 
