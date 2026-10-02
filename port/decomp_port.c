@@ -1644,3 +1644,147 @@ void gdx_discord_snapshot(GdxDiscordSnapshot* out) {
     out->playerPosition = gRacers[0].position;
     out->playerFinished = (gRacers[0].stateFlags & RACER_STATE_FINISHED) != 0;
 }
+
+/* VR HUD split marker (port/vr/gdx_openxr.cpp, Interpreter::VrPass). Race_Draw calls this right
+   before Menus_Draw, which draws the whole race HUD, so a VR replay can draw the world per eye and
+   the HUD once into a head-locked layer. The marker is a G_NOOP whose sub-code (bits 16-23) is the
+   interpreter's kVrHudMarker; it is emitted only when VR was requested at launch, so desktop
+   display lists are byte-identical to before. */
+int gGdxVrHudMarkerEnabled = 0;
+/* Bumped every time Race_Draw runs, VR or not, so the VR layer only presents in stereo while a race
+   view is really being drawn (gGameMode alone already reads GP race during the boot logos). */
+unsigned int gGdxVrRaceDrawCount = 0;
+
+Gfx* gdx_vr_hud_marker(Gfx* gfx) {
+    gGdxVrRaceDrawCount++;
+    if (gGdxVrHudMarkerEnabled) {
+        gDma0p(gfx++, G_NOOP, 0, (0x56 << 16) | 1);
+    }
+    return gfx;
+}
+
+/* VR stereo culling (course.c Course_Draw, racer.c Racer_Draw): while set, track chunks and
+   machines are rejected by distance from the camera only, since the viewer can look anywhere
+   around the game camera. Set per tick by port/vr/gdx_openxr.cpp; always 0 outside VR. */
+int gGdxVrWideCull = 0;
+
+/* VR screen-space sprites (port/vr, Interpreter::OnVrSpriteMarker). Racer_Draw draws a few sprites
+   at screen positions the game projects with its own camera; in a headset those must either live
+   on the HUD layer (the "CHECK" racer-behind warning, FINISH text) or follow a world point in each
+   eye (position badges and the rival marker over machines). These emit G_NOOP markers bracketing
+   such sprites -- only when VR was requested, so desktop display lists are unchanged. World anchors
+   go into a small ring the interpreter resolves by id while it replays the same tick. */
+typedef struct GdxVrWorldSprite {
+    f32 x, y, z;
+    f32 pivotX, pivotY;
+    f32 width, height;
+    f32 gameTanHalfY; /* 1 / projectionMtx.m[1][1] of the camera the sprite was sized for */
+} GdxVrWorldSprite;
+
+#define GDX_VR_WORLD_SPRITE_RING 64
+static GdxVrWorldSprite sGdxVrWorldSprites[GDX_VR_WORLD_SPRITE_RING];
+static s32 sGdxVrWorldSpriteNext = 0;
+
+Gfx* gdx_vr_hud_sprites_begin(Gfx* gfx) {
+    if (gGdxVrHudMarkerEnabled) {
+        gDma0p(gfx++, G_NOOP, 0, (0x57 << 16));
+    }
+    return gfx;
+}
+
+Gfx* gdx_vr_hud_sprites_end(Gfx* gfx) {
+    if (gGdxVrHudMarkerEnabled) {
+        gDma0p(gfx++, G_NOOP, 0, (0x58 << 16));
+    }
+    return gfx;
+}
+
+/* (x, y, z): world anchor. (pivotX, pivotY): where the anchor sits inside the sprite, and
+   (width, height): sprite size, both in native 320x240 pixels -- the same offsets the game
+   subtracts from the projected anchor to place the rectangle. */
+Gfx* gdx_vr_world_sprite_begin(Gfx* gfx, f32 x, f32 y, f32 z, f32 pivotX, f32 pivotY, f32 width, f32 height) {
+    s32 id;
+
+    if (!gGdxVrHudMarkerEnabled) {
+        return gfx;
+    }
+    id = sGdxVrWorldSpriteNext;
+    sGdxVrWorldSpriteNext = (sGdxVrWorldSpriteNext + 1) % GDX_VR_WORLD_SPRITE_RING;
+    sGdxVrWorldSprites[id].x = x;
+    sGdxVrWorldSprites[id].y = y;
+    sGdxVrWorldSprites[id].z = z;
+    sGdxVrWorldSprites[id].pivotX = pivotX;
+    sGdxVrWorldSprites[id].pivotY = pivotY;
+    sGdxVrWorldSprites[id].width = width;
+    sGdxVrWorldSprites[id].height = height;
+    sGdxVrWorldSprites[id].gameTanHalfY =
+        (gCameras[0].projectionMtx.m[1][1] > 0.0f) ? (1.0f / gCameras[0].projectionMtx.m[1][1]) : 0.0f;
+    gDma0p(gfx++, G_NOOP, 0, (0x59 << 16) | id);
+    return gfx;
+}
+
+Gfx* gdx_vr_world_sprite_end(Gfx* gfx) {
+    if (gGdxVrHudMarkerEnabled) {
+        gDma0p(gfx++, G_NOOP, 0, (0x5A << 16));
+    }
+    return gfx;
+}
+
+/* out: x, y, z, pivotX, pivotY, width, height, gameTanHalfY. Returns 0 for an id outside the ring. */
+int gdx_vr_world_sprite_lookup(int id, float out[8]) {
+    const GdxVrWorldSprite* ws;
+
+    if (id < 0 || id >= GDX_VR_WORLD_SPRITE_RING) {
+        return 0;
+    }
+    ws = &sGdxVrWorldSprites[id];
+    out[0] = ws->x;
+    out[1] = ws->y;
+    out[2] = ws->z;
+    out[3] = ws->pivotX;
+    out[4] = ws->pivotY;
+    out[5] = ws->width;
+    out[6] = ws->height;
+    out[7] = ws->gameTanHalfY;
+    return 1;
+}
+
+/* VR (port/vr/gdx_openxr.cpp): camera 0's track up, the game's smoothed gravity-up for the followed
+   racer (Camera.racerBasis.y). The camera's own basis.y is its pitched up vector, so this is what
+   the VR layer levels the chase view against while still banking with the track. Falls back to
+   world +y when unset. */
+void gdx_vr_camera_track_up(float out[3]) {
+    const Camera* camera = &gCameras[0];
+    f32 x = camera->racerBasis.y.x;
+    f32 y = camera->racerBasis.y.y;
+    f32 z = camera->racerBasis.y.z;
+    f32 len2 = (x * x) + (y * y) + (z * z);
+
+    if (len2 < 0.0001f) {
+        x = 0.0f;
+        y = 1.0f;
+        z = 0.0f;
+    }
+    out[0] = x;
+    out[1] = y;
+    out[2] = z;
+}
+
+/* VR cockpit view (port/vr): the followed racer's rendered position (modelPos, what the machine's
+   model matrix is built from) and its travel orientation (trueBasis: x forward, y up). The travel
+   basis, not the model basis, so the view does not spin through spin attacks or roll with the
+   body's lean animation. Read once per tick by the gfx bridge, which interpolates it like the
+   camera. */
+void gdx_vr_read_player_vehicle(float pos[3], float forward[3], float up[3]) {
+    const Racer* racer = &gRacers[gCameras[0].id];
+
+    pos[0] = racer->modelPos.x;
+    pos[1] = racer->modelPos.y;
+    pos[2] = racer->modelPos.z;
+    forward[0] = racer->trueBasis.x.x;
+    forward[1] = racer->trueBasis.x.y;
+    forward[2] = racer->trueBasis.x.z;
+    up[0] = racer->trueBasis.y.x;
+    up[1] = racer->trueBasis.y.y;
+    up[2] = racer->trueBasis.y.z;
+}

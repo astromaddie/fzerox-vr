@@ -49,6 +49,10 @@
 #include "controller.h"
 #include "fzx_game.h" // GameMode values + GET_MODE (in-race safety checks)
 #include "gdx_input_script.h" // GDX_INPUT_SCRIPT: dev-only deterministic input playback (see file header)
+
+/* Installed by the OpenXR session (port/vr/gdx_openxr.cpp) to merge headset-controller input into
+   pad 1 when the controllers are read through OpenXR actions rather than as an SDL gamepad. */
+void (*gGdxVrInputMerge)(GdxInputPad* pad) = NULL;
 #include "port_log.h"
 
 #include <stdbool.h>
@@ -819,6 +823,11 @@ void gdx_controller_poll(void) {
         scriptPad.stickX = stick_x[0];
         scriptPad.stickY = stick_y[0];
         gdx_input_script_override(&scriptPad);
+        // VR controllers read through OpenXR actions (port/vr/gdx_openxr.cpp), merged into pad 1.
+        // Null unless an XR session installed it, so desktop input is untouched.
+        if (gGdxVrInputMerge != NULL) {
+            gGdxVrInputMerge(&scriptPad);
+        }
         buttons[0] = scriptPad.buttons;
         stick_x[0] = scriptPad.stickX;
         stick_y[0] = scriptPad.stickY;

@@ -1,0 +1,82 @@
+// port/vr/gdx_vr_math.h — per-eye projection-view matrices for stereo rendering.
+//
+// Plain POD types only (no OpenXR headers) so the maths is unit-tested without a runtime.
+//
+// Conventions, matching the game so its combined camera matrix can be replaced one-for-one:
+//   * Row vectors: clip = world * PV, PV = V * P (decomp/src/game/camera.c
+//     Camera_CalculateProjectionViewMtx).
+//   * View space is right-handed, x right, y up, camera looking down -z. V's rotation columns are
+//     (right, up, back) where back = normalize(eye - at) (decomp/src/sys/math.c Matrix_SetLookAt),
+//     and V's row 3 is -eye dotted with each column.
+//   * Projection is the glFrustum form Matrix_SetFrustrum writes: m[2][3] = -1, so w = -z_view,
+//     and NDC z = -1 at the near plane.
+//   * OpenXR's LOCAL/VIEW spaces share that handedness (+x right, +y up, +z back), so an XR pose
+//     maps onto a camera basis by taking XR axis components as coefficients of (right, up, back).
+
+#ifndef GDX_VR_MATH_H
+#define GDX_VR_MATH_H
+
+namespace gdx_vr {
+
+struct Vec3 {
+    float x, y, z;
+};
+
+struct Quat {
+    float x, y, z, w;
+};
+
+// XrPosef equivalent.
+struct Pose {
+    Quat orientation;
+    Vec3 position;
+};
+
+// XrFovf equivalent: tangent-space half angles in radians; left and down are normally negative.
+struct Fov {
+    float angleLeft, angleRight, angleUp, angleDown;
+};
+
+// A world-space reference frame the viewer's tracked head is attached to (the chase camera, or a
+// point on the machine). Basis vectors are orthonormal; back points from the scene toward the
+// viewer.
+struct Anchor {
+    Vec3 origin;
+    Vec3 right, up, back;
+};
+
+// Build an anchor from the game camera's look-at inputs, with the same cross products as
+// Matrix_SetLookAt. Returns false (anchor untouched) on degenerate input: eye == at, or up
+// parallel to the view direction.
+bool AnchorFromLookAt(const Vec3& eye, const Vec3& at, const Vec3& up, Anchor* out);
+
+// Row-vector view matrix for an eye posed (in metres, OpenXR conventions) relative to `anchor`.
+// `unitsPerMeter` converts tracked translation into world units.
+void EyeViewMatrix(const Anchor& anchor, const Pose& eye, float unitsPerMeter, float out[4][4]);
+
+// glFrustum-form projection for an asymmetric XR field of view.
+void FovProjectionMatrix(const Fov& fov, float nearZ, float farZ, float out[4][4]);
+
+// out = a * b (row-vector convention: apply a, then b). out may not alias a or b.
+void MatMul(const float a[4][4], const float b[4][4], float out[4][4]);
+
+// The game's combined matrix is stored as s15.16 fixed point, so every element must stay inside
+// +-32768 (the Expansion Kit build widens the fov when a translation term nears that limit,
+// camera.c). A uniform scale of a projection-view matrix leaves every projected point unchanged:
+// x/w, y/w and z/w are invariant and clip tests compare against w. This scales `m` down so its
+// largest element is at most `limit`, and returns the factor applied (1 when already inside).
+float FitToFixedPoint(float m[4][4], float limit);
+
+// Convenience: anchor + eye pose + fov -> fitted projection-view matrix for that eye.
+float EyeProjView(const Anchor& anchor, const Pose& eye, const Fov& fov, float unitsPerMeter, float nearZ, float farZ,
+                  float out[4][4]);
+
+// Rotate v by unit quaternion q.
+Vec3 Rotate(const Quat& q, const Vec3& v);
+
+// A vector given in the anchor's local (XR) axes, expressed in world space.
+Vec3 AnchorToWorld(const Anchor& anchor, const Vec3& local);
+
+} // namespace gdx_vr
+
+#endif // GDX_VR_MATH_H

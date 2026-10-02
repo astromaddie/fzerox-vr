@@ -36,6 +36,9 @@
 #include "gdx_firstboot_gui.h"
 #include "gdx_fps_overlay.h"
 #include "gdx_perf.h"
+#ifdef GDX_OPENXR
+#include "vr/gdx_openxr.h"
+#endif
 #include "gdx_dev_gates.h"
 #include "gdx_extract_launch.h"
 #include "gdx_audio_thread.h"
@@ -861,6 +864,10 @@ static std::vector<std::string> findArchivePaths(const char* argv0) {
 int main(int argc, char** argv) {
     // Must precede every log call this process makes. Precedence rules in port/gdx_dev_gates.h.
     gdx_dev_gates_init_env();
+#ifdef GDX_OPENXR
+    // Launch-time only (`--vr` / GDX_VR=1). Nothing VR-related runs unless this says so.
+    gdx_vr::Configure(argc, argv);
+#endif
 
     // Must run before any libultraship path resolution, so config/logs/disk/IPL consolidate into
     // the resolved data dir.
@@ -1381,6 +1388,20 @@ int main(int argc, char** argv) {
         gdx_fixed_aspect_tick();
         gdx::PerfPhaseEnd(gdx::PerfInput);
 
+#ifdef GDX_OPENXR
+        // While an XR session runs, the OpenXR runtime clocks this loop: this blocks in xrWaitFrame
+        // and returns false when that XR frame needs no simulation tick (it has already been
+        // submitted with the previous image), so the game is not run this iteration. Without a
+        // session it returns true and the desktop pacing below applies unchanged.
+        if (gdx_vr::ExitRequested()) {
+            w->Close();
+        }
+        if (!gdx_vr::BeginHostIteration()) {
+            gdx::PerfFrameEnd();
+            continue;
+        }
+#endif
+
         // The sub-frame schedule must be configured BEFORE gdx_vi_tick: the game's gfx-task
         // submission (gdx_gfx_run) executes inside gdx_vi_tick's synchronous fiber dispatch, so the
         // schedule has to be live before any gfx work runs. Inert unless FrameInterpolation is on.
@@ -1398,7 +1419,18 @@ int main(int argc, char** argv) {
         // Divider flips are cut-covered on both edges — Racer_Init on entry, the PORT-gated cut in
         // func_xk2_800EC91C (19DD60.c) on exit.
         const bool interpEditorActive = (gdx_get_force_fixed_aspect() != 0) && (gdx_vi_divider() > 1);
-        const bool interpOn = (gdx_gfx_interp_host_active() != 0) && !interpEditorActive;
+#ifdef GDX_OPENXR
+        // While an XR session runs, desktop sub-frame interpolation never presents. Flat ticks show
+        // one image per tick on the headset quad; stereo (race) ticks need the bridge's replay
+        // machinery, which the VR branch in gdx_gfx_run drives instead of the desktop burst.
+        const bool vrPacesHost = gdx_vr::PacesHost();
+        const bool vrStereoTick = gdx_vr::StereoThisTick();
+#else
+        const bool vrPacesHost = false;
+        const bool vrStereoTick = false;
+#endif
+        const bool interpOn =
+            vrPacesHost ? vrStereoTick : ((gdx_gfx_interp_host_active() != 0) && !interpEditorActive);
         const double interpTickStart = gdx_host_now_seconds();
         // This tick's sub-frame count, derived from the two live target-fps CVars:
         //   gEnhancements.Graphics.InterpTargetMode 0 -> Match Refresh Rate (target = the display's
@@ -1508,9 +1540,13 @@ int main(int argc, char** argv) {
             sInterpMatchRefreshActive = false; // force an immediate OS-Hz re-resolve on next enable
             // Mirror of the raise above; live-value guarded so the backend is only touched on a
             // real change.
+            // Under VR the XR runtime already paces ticks to 59.94 Hz of display time; a 60 fps
+            // software limiter on top would delay presents into missed XR frames, so it is raised
+            // out of the way.
+            const int nonInterpTargetFps = vrPacesHost ? 1000 : 60;
             Fast::Fast3dWindow* interpWin = static_cast<Fast::Fast3dWindow*>(w.get());
-            if (interpWin->GetTargetFps() != 60) {
-                interpWin->SetTargetFps(60);
+            if (interpWin->GetTargetFps() != nonInterpTargetFps) {
+                interpWin->SetTargetFps(nonInterpTargetFps);
             }
         }
         gdx_gfx_interp_tick_config(interpOn ? 1 : 0, interpTickStart, kGdxInterpTickSeconds,
@@ -1632,7 +1668,10 @@ int main(int argc, char** argv) {
             } else {
                 sNextLogicDeadline += kGdxInterpTickSeconds;
             }
-            gdx_host_pace_logic_until(sNextLogicDeadline);
+            if (!vrPacesHost) {
+                // Under VR the bridge's xrWaitFrame already holds the tick to the display timeline.
+                gdx_host_pace_logic_until(sNextLogicDeadline);
+            }
             // Sampled AFTER the pacer on purpose: a healthy tick sleeps to the deadline and
             // publishes ~0, a tick that could not afford its work skips the sleep and publishes the
             // shortfall. The burst pre-sizer steers on this, so it must describe the SCHEDULE and
@@ -1735,6 +1774,9 @@ int main(int argc, char** argv) {
         }
     }
     logStep("window closed; exiting");
+#ifdef GDX_OPENXR
+    gdx_vr::Shutdown();
+#endif
     // Discord shutdown FIRST in the exit path, not last: discord-rpc's IO-thread join can hang
     // on Windows (upstream issue #275, open since 2018). Early, a stall is visible while the
     // window is already gone; last, it would leave a silent zombie process. ClearPresence +

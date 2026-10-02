@@ -455,11 +455,26 @@ set(GDX_EXTRACT_PREFIX  "${CMAKE_BINARY_DIR}/gdx-extract")
 set(GDX_EXTRACT_INSTALL "${GDX_EXTRACT_PREFIX}/install")
 set(GDX_EXTRACT_EXE     "${GDX_EXTRACT_INSTALL}/bin/gdx-extract${CMAKE_EXECUTABLE_SUFFIX}")
 
+# The archive's golden SHA-256 (gen/gdx_o2r_expected.h) is only reproducible if the extractor
+# behaves identically on every host architecture. Two defaults differ between x86-64 and ARM64
+# GCC/Clang and both changed the course_data records on linux-arm64, so first boot discarded the
+# archive and booted from the raw ROM on every launch:
+#   * char is unsigned on ARM64: CourseData's std::vector<char> file name is written through the
+#     int32_t BinaryWriter overload, so a 0xFF name byte came out as ff 00 00 00 instead of
+#     ff ff ff ff;
+#   * GCC contracts a*b+c into fused multiply-adds on ARM64 by default, which shifted the rounding
+#     ahead of the float->int truncations in CourseData::CalculateChecksum (the game build already
+#     disables contraction for the same reason, top-level CMakeLists.txt).
+# The extractor is an isolated ExternalProject and inherits none of the parent's flags, so both are
+# pinned through a project include (Torch overwrites CMAKE_CXX_FLAGS, so command-line flags would
+# not reach its own sources).
+
 ExternalProject_Add(gdx_extract_ext
     SOURCE_DIR  "${GDX_EXTRACT_SRC_DIR}"
     PREFIX      "${GDX_EXTRACT_PREFIX}"
     INSTALL_DIR "${GDX_EXTRACT_INSTALL}"
     CMAKE_CACHE_ARGS
+        "-DCMAKE_PROJECT_INCLUDE:FILEPATH=${CMAKE_CURRENT_SOURCE_DIR}/cmake/gdx_extract_portable.cmake"
         -DUSE_STANDALONE:BOOL=ON
         -DBUILD_STORMLIB:BOOL=OFF
         -DGDX_DETERMINISTIC:BOOL=ON
@@ -567,6 +582,70 @@ if(TARGET libultraship)
         "${CMAKE_SOURCE_DIR}/libultraship/src"
         "${CMAKE_SOURCE_DIR}/libultraship/include"
     )
+endif()
+
+# Optional OpenXR output mode (docs/VR_ARCHITECTURE.md). Compiled in only when enabled, and even
+# then inert unless the game is launched with --vr or GDX_VR=1. The Khronos loader is pinned by
+# archive hash and linked statically, so a VR build ships no new shared library.
+option(GDX_OPENXR "Build the optional OpenXR VR output mode (Linux; launch with --vr)" OFF)
+if(GDX_OPENXR)
+    if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        message(FATAL_ERROR "GDX_OPENXR currently supports Linux (GLX binding) only")
+    endif()
+    include(FetchContent)
+    # CMP0077: these plain variables override the SDK's option() defaults without touching the
+    # cache. Unset again below so they cannot leak into later subdirectories.
+    set(DYNAMIC_LOADER OFF)
+    set(BUILD_API_LAYERS OFF)
+    set(BUILD_TESTS OFF)
+    set(BUILD_CONFORMANCE_TESTS OFF)
+    set(BUILD_WITH_SYSTEM_JSONCPP OFF)
+    set(BUILD_WITH_XCB_HEADERS OFF)
+    set(BUILD_WITH_WAYLAND_HEADERS OFF)
+    set(CMAKE_POLICY_DEFAULT_CMP0077 NEW)
+    FetchContent_Declare(gdx_openxr_sdk
+        URL https://github.com/KhronosGroup/OpenXR-SDK/archive/refs/tags/release-1.1.63.tar.gz
+        URL_HASH SHA256=5b8dac0608f49498fe8e95f562fe6bcf0bc781e561f137348a8c251d06a88b6f
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    )
+    FetchContent_MakeAvailable(gdx_openxr_sdk)
+    unset(DYNAMIC_LOADER)
+    unset(BUILD_API_LAYERS)
+    unset(BUILD_TESTS)
+    unset(BUILD_CONFORMANCE_TESTS)
+    unset(BUILD_WITH_SYSTEM_JSONCPP)
+    unset(BUILD_WITH_XCB_HEADERS)
+    unset(BUILD_WITH_WAYLAND_HEADERS)
+    unset(CMAKE_POLICY_DEFAULT_CMP0077)
+
+    target_sources(G-Diffuser PRIVATE vr/gdx_openxr.cpp vr/gdx_vr_scheduler.cpp vr/gdx_vr_math.cpp)
+    target_compile_definitions(G-Diffuser PRIVATE GDX_OPENXR=1)
+    target_link_libraries(G-Diffuser PRIVATE OpenXR::openxr_loader OpenXR::headers)
+    message(STATUS "G-Diffuser: GDX_OPENXR=ON — OpenXR output mode compiled in (OpenXR-SDK 1.1.63, static loader)")
+endif()
+
+# VR display-time scheduler test: pure timing policy, no OpenXR, no window, no game data. Built in
+# every configuration so the scheduler stays covered even when GDX_OPENXR is OFF.
+add_executable(gdx_vr_scheduler_tests
+    tests/gdx_vr_scheduler_tests.cpp
+    vr/gdx_vr_scheduler.cpp)
+target_compile_features(gdx_vr_scheduler_tests PRIVATE cxx_std_17)
+if(MSVC)
+    target_compile_options(gdx_vr_scheduler_tests PRIVATE /W3)
+elseif(GDX_PORT_WARN_FLAGS)
+    target_compile_options(gdx_vr_scheduler_tests PRIVATE ${GDX_PORT_WARN_FLAGS})
+endif()
+
+# VR stereo maths test: per-eye projection-view matrices checked against a transcription of the
+# game's own camera matrix construction. No OpenXR, no window, no game data.
+add_executable(gdx_vr_math_tests
+    tests/gdx_vr_math_tests.cpp
+    vr/gdx_vr_math.cpp)
+target_compile_features(gdx_vr_math_tests PRIVATE cxx_std_17)
+if(MSVC)
+    target_compile_options(gdx_vr_math_tests PRIVATE /W3)
+elseif(GDX_PORT_WARN_FLAGS)
+    target_compile_options(gdx_vr_math_tests PRIVATE ${GDX_PORT_WARN_FLAGS})
 endif()
 
 # DSP unit-test harness: compiles n64_audio_hle.c UNMODIFIED and drives it black-box through

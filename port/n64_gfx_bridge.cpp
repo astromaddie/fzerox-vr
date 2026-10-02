@@ -35,6 +35,9 @@
 #include "gdx_vi_convert.h"
 #include "gdx_interp.h"
 #include "gdx_camera_pose.h"
+#ifdef GDX_OPENXR
+#include "vr/gdx_openxr.h"
+#endif
 extern "C" {
 #include "mio0.h"
 }
@@ -2935,6 +2938,33 @@ class GdxSeg9FallbackDiag {
     const ResolvedAddress* mOut;
 };
 
+// True when this tick is presented in stereo by the VR branch of gdx_gfx_run. Stereo needs the
+// camera's projection*view routed through scratch even if the user turned camera interpolation off,
+// because each eye replaces exactly that matrix.
+#ifdef GDX_OPENXR
+// decomp/src/overlays/ovl_i3/background.c (PORT): per-eye rebuild of camera 0's backdrop vertices.
+extern "C" void gdx_vr_background_vtx_save(void);
+extern "C" void gdx_vr_background_vtx_restore(void);
+extern "C" void gdx_vr_background_vtx_build_eye(const float eyePos[3], const float forward[3], const float up[3],
+                                                float tanHalfX, float tanHalfY);
+// port/decomp_port.c: the followed racer's rendered position and travel basis, for the cockpit view.
+extern "C" void gdx_vr_read_player_vehicle(float pos[3], float forward[3], float up[3]);
+// Player vehicle pose for this tick and the previous one (pos, forward, up), rolled with the camera
+// poses so the cockpit anchor interpolates at the same t as the rendered machine.
+static float gGdxVrVehCur[9];
+static float gGdxVrVehPrev[9];
+static bool gGdxVrVehCurOk = false;
+static bool gGdxVrVehPrevOk = false;
+#endif
+
+static inline bool GdxVrStereoTick() {
+#ifdef GDX_OPENXR
+    return gdx_vr::StereoThisTick();
+#else
+    return false;
+#endif
+}
+
 class N64DisplayListAdapter {
   public:
     struct ConvertedList {
@@ -3325,6 +3355,16 @@ class N64DisplayListAdapter {
     // builder, same process, so a match is bit-exact and a mismatch disqualifies the slot for the
     // tick, falling back to the element-wise lerp.
     void GdxCameraPoseRoll() {
+#ifdef GDX_OPENXR
+        if (GdxVrStereoTick()) {
+            std::memcpy(gGdxVrVehPrev, gGdxVrVehCur, sizeof(gGdxVrVehCur));
+            gGdxVrVehPrevOk = gGdxVrVehCurOk;
+            gdx_vr_read_player_vehicle(&gGdxVrVehCur[0], &gGdxVrVehCur[3], &gGdxVrVehCur[6]);
+            gGdxVrVehCurOk = true;
+        } else {
+            gGdxVrVehCurOk = gGdxVrVehPrevOk = false;
+        }
+#endif
         if (!mInterpCameraRebuild) {
             return;
         }
@@ -3394,6 +3434,56 @@ class N64DisplayListAdapter {
             }
         }
     }
+
+#ifdef GDX_OPENXR
+    // VR eye replay: replace player 1's projection*view with the active eye's, anchored on the
+    // game camera pose interpolated to t (or the current pose when this tick must snap). Returns
+    // false outside an eye replay or when the pose failed its tick's identity check; the slot then
+    // takes the normal path, which shows the game's own (mono) camera for this tick.
+    bool GdxVrEyeRebuildSlot(uintptr_t orig, uintptr_t recPrev, bool recSnap, GdxP0Mtx* scratch, float t) {
+        const int slot = GdxCameraMtxSlot(static_cast<uint32_t>(orig - mCurPoolBase));
+        if (slot != 0 || !gGdxCamPoseCurOk[0]) {
+            return false;
+        }
+        GdxCameraPose pose = gGdxCamPoseCur[0];
+        if (gGdxCamPosePrevOk[0] && !recSnap && recPrev != 0 && !mForceCutSnap && t < 1.0f &&
+            gGdxCamPosePrev[0].numPlayers == pose.numPlayers) {
+            GdxCameraPoseLerp(gGdxCamPosePrev[0], gGdxCamPoseCur[0], t, &pose);
+        }
+        float pv[4][4];
+        if (gdx_vr::CockpitMode() && gGdxVrVehCurOk) {
+            // Cockpit: anchor on the machine itself, interpolated at the same t as its model matrix.
+            float v[9];
+            std::memcpy(v, gGdxVrVehCur, sizeof(v));
+            if (gGdxVrVehPrevOk && !recSnap && recPrev != 0 && !mForceCutSnap && t < 1.0f) {
+                for (int i = 0; i < 9; ++i) {
+                    v[i] = gGdxVrVehPrev[i] + (gGdxVrVehCur[i] - gGdxVrVehPrev[i]) * t;
+                }
+            }
+            float noseForward = 0.0f, noseUp = 0.0f;
+            gdx_vr::CockpitOffsets(&noseForward, &noseUp);
+            const float eye[3] = { v[0] + v[3] * noseForward + v[6] * noseUp,
+                                   v[1] + v[4] * noseForward + v[7] * noseUp,
+                                   v[2] + v[5] * noseForward + v[8] * noseUp };
+            const float at[3] = { eye[0] + v[3], eye[1] + v[4], eye[2] + v[5] };
+            const float up[3] = { v[6], v[7], v[8] };
+            // The machine's own nose sits a metre or less below the eye: pull the near plane in.
+            const float nearZ = (pose.nearZ > 2.0f) ? 2.0f : pose.nearZ;
+            if (!gdx_vr::BuildActiveEyeProjView(eye, at, up, nearZ, pose.farZ, pv, false)) {
+                return false;
+            }
+        } else {
+            const float eye[3] = { pose.eyeX, pose.eyeY, pose.eyeZ };
+            const float at[3] = { pose.atX, pose.atY, pose.atZ };
+            const float up[3] = { pose.upX, pose.upY, pose.upZ };
+            if (!gdx_vr::BuildActiveEyeProjView(eye, at, up, pose.nearZ, pose.farZ, pv, true)) {
+                return false;
+            }
+        }
+        gdx_interp::MtxFromF(pv, scratch);
+        return true;
+    }
+#endif
 
     // Rebuild one camera matrix at sub-frame time t. Returns false to fall through to the
     // element-wise path; every refusal below is a case where the rebuild is not provably better
@@ -3627,6 +3717,12 @@ class N64DisplayListAdapter {
             // t == 1 deliberately falls through to the verbatim copy below: the transparency
             // invariant is that the last sub-frame IS a byte copy of the pool matrix, and the
             // rebuild must not be the thing that establishes the invariant it is checked against.
+#ifdef GDX_OPENXR
+            if (r.proj && mCurPoolBase != 0 && GdxVrStereoTick() &&
+                GdxVrEyeRebuildSlot(r.orig, r.prev, r.snap, r.scratch, t)) {
+                continue;
+            }
+#endif
             if (r.proj && mInterpCameraRebuild && t < 1.0f && mCurPoolBase != 0 &&
                 GdxCameraRebuildSlot(r.orig, r.prev, r.snap, r.scratch, t)) {
                 continue;
@@ -3970,7 +4066,7 @@ class N64DisplayListAdapter {
     // dev gate is OR-ed in so a dev build can force camera interpolation on for A/B without
     // touching the shipped CVar.
     const bool mInterpCamera =
-        gdx_interp::CameraInterpActive() || gdx_dev_gate(GDX_GATE_INTERP_CAMERA) != 0;
+        gdx_interp::CameraInterpActive() || gdx_dev_gate(GDX_GATE_INTERP_CAMERA) != 0 || GdxVrStereoTick();
     // Rebuild the camera's projection*view from an interpolated POSE instead of lerping the
     // finished matrix element-wise. Requires mInterpCamera: with camera interpolation off the
     // matrix is not rerouted at all and there is nothing to rebuild. ON by default; see
@@ -8958,6 +9054,88 @@ extern "C" void gdx_gfx_run(void* dl, size_t dl_size, GdxTaskUcode taskUcode) {
     // it hands ownership here and only paces the LOGIC deadline (the frame pacer is mutually excluded).
     // The env-gated P0/P1 in-bridge diagnostics keep their own single-present M=2 path in the else.
     const bool p2Host = adapter.GdxP2HostActive() && gGdxInterpHostCfg.active;
+#ifdef GDX_OPENXR
+    if (p2Host && GdxVrStereoTick()) {
+        // VR stereo: every XR frame due within this tick replays the retained list once per eye
+        // into an offscreen eye target. Same render-only contract as the desktop burst below: the
+        // pools are quiescent, only scratch is written, and each replay after the first starts
+        // from the deterministic RDP baseline.
+        struct EyeCtx {
+            N64DisplayListAdapter* adapter;
+            Fast::Interpreter* interp;
+            Fast::F3DGfx* commands;
+            Fast::F3dex2Variant variant;
+            int replays;
+        } eyeCtx = { &adapter, interp.get(), converted, gdxTaskVariant, 0 };
+        gdx_vr::StereoCallbacks cb;
+        cb.user = &eyeCtx;
+        cb.renderEye = [](void* user, int /*eye*/, float t, int width, int height) -> unsigned {
+            EyeCtx* c = static_cast<EyeCtx*>(user);
+            c->adapter->GdxP0RefillScratch(t);
+            c->adapter->GdxVpRefillScratch(t);
+            c->adapter->GdxVtxRefillScratch(t);
+            // The camera refill above anchored this eye; face the backdrop quads along it.
+            {
+                float pos[3], fwd[3], up[3], tanX = 0.0f, tanY = 0.0f;
+                if (gdx_vr::ActiveEyeWorldFrame(pos, fwd, up, &tanX, &tanY)) {
+                    gdx_vr_background_vtx_build_eye(pos, fwd, up, tanX, tanY);
+                }
+            }
+            c->interp->SetF3dex2Variant(c->variant);
+            if (c->replays > 0) {
+                c->interp->ResetRdpForReplay();
+            }
+            c->interp->ResetGeometryDiagnostics();
+            c->interp->SetVrEyeTarget(static_cast<uint32_t>(width), static_cast<uint32_t>(height));
+            c->interp->SetVrPass(Fast::Interpreter::VrPass::WorldOnly);
+            c->interp->SetVrEyeTanHalfY(gdx_vr::ActiveEyeTanHalfY());
+            gdx_perf_sub_begin(GDX_PERF_SUB_IRUN);
+            c->interp->StartFrame();
+            c->interp->Run(reinterpret_cast<Gfx*>(c->commands), {});
+            gdx_perf_sub_end(GDX_PERF_SUB_IRUN);
+            c->replays++;
+            return static_cast<unsigned>(c->interp->GetGameFramebufferTexture());
+        };
+        cb.renderHud = [](void* user, int width, int height, int whiteBackground) -> unsigned {
+            EyeCtx* c = static_cast<EyeCtx*>(user);
+            c->interp->SetF3dex2Variant(c->variant);
+            if (c->replays > 0) {
+                c->interp->ResetRdpForReplay();
+            }
+            c->interp->SetVrEyeTarget(static_cast<uint32_t>(width), static_cast<uint32_t>(height));
+            c->interp->SetVrPass(Fast::Interpreter::VrPass::HudOnly);
+            // Rendered over black and over white; the presenter recovers coverage from the pair.
+            void (*savedHook)(Fast::Interpreter*) = Fast::Interpreter::sPortAfterClearHook;
+            if (whiteBackground != 0) {
+                Fast::Interpreter::SetPortAfterClearHook(
+                    [](Fast::Interpreter*) { gdx_vr::ClearBoundFramebufferColor(1.0f, 1.0f, 1.0f, 1.0f); });
+            } else {
+                Fast::Interpreter::SetPortAfterClearHook(
+                    [](Fast::Interpreter*) { gdx_vr::ClearBoundFramebufferColor(0.0f, 0.0f, 0.0f, 1.0f); });
+            }
+            c->interp->StartFrame();
+            c->interp->Run(reinterpret_cast<Gfx*>(c->commands), {});
+            Fast::Interpreter::SetPortAfterClearHook(savedHook);
+            c->replays++;
+            const bool marker = c->interp->VrHudMarkerSeen();
+            static bool sMarkerLogged = false;
+            if (!sMarkerLogged) {
+                sMarkerLogged = true;
+                gdx_port_logf("[openxr] HUD split marker %s in the race display list\n",
+                              marker ? "found" : "NOT found");
+            }
+            return marker ? static_cast<unsigned>(c->interp->GetGameFramebufferTexture()) : 0u;
+        };
+        // The eye replays rewrite camera 0's backdrop vertices in the current pool; put the game's
+        // bytes back afterwards so the pool is exactly as the tick left it.
+        gdx_vr_background_vtx_save();
+        gdx_vr::PresentStereoTick(cb);
+        gdx_vr_background_vtx_restore();
+        interp->SetVrPass(Fast::Interpreter::VrPass::Full);
+        interp->ClearVrEyeTarget();
+        gGdxInterpPresentedLastTick = true; // the headset was served; the host must not present
+    } else
+#endif
     if (p2Host) {
         // Game logic already ran exactly once (ConvertRoot above); no sub-frame re-enters it.
         // Sub-frames read the two GfxPools and write only scratch — render-only (prime directive).
