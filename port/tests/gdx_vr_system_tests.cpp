@@ -174,6 +174,9 @@ static void CaseSettings() {
     check("HUD height clamps", SanitizeSetting(kSetHudHeight, 0.01) == 0.3 && SanitizeSetting(kSetHudHeight, 99.0) == 3.0);
     check("HUD aspect clamps", std::fabs(SanitizeSetting(kSetHudAspect, 0.5) - 4.0 / 3.0) < 1e-12 &&
                                    SanitizeSetting(kSetHudAspect, 10.0) == 4.0);
+    check("haptics scale clamps to 0..1", SanitizeSetting(kSetHaptics, -0.5) == 0.0 &&
+                                              SanitizeSetting(kSetHaptics, 3.0) == 1.0 &&
+                                              SanitizeSetting(kSetHaptics, nan) == 0.6);
     check("in-range value is untouched", SanitizeSetting(kSetNoseForward, 12.5) == 12.5);
     check("negative nose offsets are allowed", SanitizeSetting(kSetNoseUp, -5.0) == -5.0);
     check("all CVar names are in the gEnhancements.VR namespace", [] {

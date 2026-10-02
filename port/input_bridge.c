@@ -84,6 +84,20 @@ extern s32 gControllersConnected;
    Declared locally per this file's no-umbrella-header pattern. */
 extern s32 osMotorInit(OSMesgQueue* mq, OSPfs* pfs, s32 channel);
 extern s32 __osMotorAccess(OSPfs* pfs, s32 vibrate);
+
+/* VR (port/vr): the motor level the game last commanded per port (1 = rumbling). The game drives
+   the motor on/off on its own duty cycle (unk_8C intensity accumulating against 1000), so this
+   level, sampled by the headset host each host iteration, reproduces that duty cycle on the
+   controllers' haptics. Written on every call, read only while a VR session runs. */
+int gGdxVrMotorOn[4] = { 0, 0, 0, 0 };
+
+static s32 gdx_motor_access(OSPfs* pfs, s32 vibrate) {
+    s32 r = __osMotorAccess(pfs, vibrate);
+    if (r == 0 && pfs->channel >= 0 && pfs->channel < 4) {
+        gGdxVrMotorOn[pfs->channel] = (vibrate != 0);
+    }
+    return r;
+}
 extern OSMesgQueue gSerialEventQueue;
 extern bool gResetStarted;
 extern s32 D_800CCFB0;
@@ -230,7 +244,7 @@ static void gdx_sync_controller_ports(const u8* connected) {
                LUS shim always "finds" a pak; whether anything physically rumbles is up to the
                ControlDeck mapping (keyboard/mouse simply no-op in StartRumble). */
             if (osMotorInit(&gSerialEventQueue, &gControllers[i].pfs, i) == 0) {
-                __osMotorAccess(&gControllers[i].pfs, 0 /* MOTOR_STOP */);
+                gdx_motor_access(&gControllers[i].pfs, 0 /* MOTOR_STOP */);
                 gControllers[i].unk_74 = 1;
             } else {
                 gControllers[i].unk_74 = 0;
@@ -249,7 +263,7 @@ static void gdx_sync_controller_ports(const u8* connected) {
             /* A departing pad must not leave its motor running, and the pak bookkeeping resets so
                a replug re-runs the probe above instead of trusting a stale "motor on" flag. */
             if (gControllers[i].unk_74 == 1) {
-                __osMotorAccess(&gControllers[i].pfs, 0 /* MOTOR_STOP */);
+                gdx_motor_access(&gControllers[i].pfs, 0 /* MOTOR_STOP */);
             }
             gControllers[i].unk_74 = gControllers[i].unk_76 = 0;
             gControllers[i].unk_88 = gControllers[i].unk_8C = gControllers[i].unk_90 = 0;
@@ -661,7 +675,7 @@ static void gdx_update_port_inputs(int port, u16 buttons, s8 stick_x, s8 stick_y
                D_800CCFB0 term staggers a periodic stop-retry across ports every 128 ticks. */
             if (controller->unk_78 != 0) {
                 if (osMotorInit(&gSerialEventQueue, &controller->pfs, port) == 0) {
-                    __osMotorAccess(&controller->pfs, 0 /* MOTOR_STOP */);
+                    gdx_motor_access(&controller->pfs, 0 /* MOTOR_STOP */);
                     controller->unk_74 = 1;
                 } else {
                     controller->unk_74 = 0;
@@ -671,7 +685,7 @@ static void gdx_update_port_inputs(int port, u16 buttons, s8 stick_x, s8 stick_y
             } else if ((controller->unk_72 == 0) || gResetStarted) {
                 if ((controller->unk_74 == 1) &&
                     ((controller->unk_76 == 1) || !(((port << 5) + D_800CCFB0) & 0x7F))) {
-                    if (__osMotorAccess(&controller->pfs, 0 /* MOTOR_STOP */) == 0) {
+                    if (gdx_motor_access(&controller->pfs, 0 /* MOTOR_STOP */) == 0) {
                         controller->unk_76 = 0;
                     } else {
                         controller->unk_74 = 0;
@@ -687,7 +701,7 @@ static void gdx_update_port_inputs(int port, u16 buttons, s8 stick_x, s8 stick_y
                 if (controller->unk_88 >= 1000) {
                     controller->unk_88 -= 1000;
                     if (controller->unk_76 == 0) {
-                        if (__osMotorAccess(&controller->pfs, 1 /* MOTOR_START */) == 0) {
+                        if (gdx_motor_access(&controller->pfs, 1 /* MOTOR_START */) == 0) {
                             controller->unk_76 = 1;
                         } else {
                             controller->unk_74 = 0;
@@ -695,7 +709,7 @@ static void gdx_update_port_inputs(int port, u16 buttons, s8 stick_x, s8 stick_y
                     }
                 } else {
                     if (controller->unk_76 == 1) {
-                        if (__osMotorAccess(&controller->pfs, 0 /* MOTOR_STOP */) == 0) {
+                        if (gdx_motor_access(&controller->pfs, 0 /* MOTOR_STOP */) == 0) {
                             controller->unk_76 = 0;
                         } else {
                             controller->unk_74 = 0;

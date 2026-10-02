@@ -32,6 +32,7 @@ const SettingInfo kSettings[kSettingCount] = {
     { "gEnhancements.VR.NoseForward", false, 8.0, -40.0, 40.0 },  // cockpit eye offset, world units
     { "gEnhancements.VR.NoseUp", false, 6.0, -40.0, 40.0 },
     { "gEnhancements.VR.WorldScale", false, 10.0, 2.0, 50.0 },    // world units per metre
+    { "gEnhancements.VR.Haptics", false, 0.6, 0.0, 1.0 },         // pulse strength scale
 };
 
 } // namespace

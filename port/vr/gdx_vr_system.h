@@ -7,7 +7,8 @@
 //                collides with in-race boost
 //   hold 1 s     recentre (yaw and horizontal position; the standing-height anchor is kept)
 //   hold 3 s     recentre and re-anchor the height too (the 1 s recentre has already fired)
-// Both holds buzz both hands (0.6 amplitude, 80 ms).
+// Both holds buzz both hands (SFVR_HAPTIC_SYSTEM: 0.6 amplitude, 80 ms, then scaled by the
+// gEnhancements.VR.Haptics setting).
 //
 // Nothing here talks to OpenXR or reads a clock: the caller passes the button state and a monotonic
 // time in seconds, so hold timing is unit-tested without a runtime (tests/gdx_vr_system_tests.cpp).
@@ -56,12 +57,6 @@ class ViewButton {
     sfvr_view_button button_{};
 };
 
-struct Haptic {
-    float amplitude;
-    int durationMs;
-};
-constexpr Haptic kSystemBuzz = { 0.6f, 80 }; // standard.md section 6, `system`, both hands
-
 // gEnhancements.VR.* CVars. Registered with these defaults, clamped to [lo, hi] on load and on every
 // read (a hand-edited config or a later settings UI can write anything).
 enum SettingId {
@@ -75,6 +70,7 @@ enum SettingId {
     kSetNoseForward,
     kSetNoseUp,
     kSetWorldScale,
+    kSetHaptics, // scale for every haptic pulse (standard.md section 6), 0 = off
     kSettingCount
 };
 

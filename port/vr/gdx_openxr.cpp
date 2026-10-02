@@ -35,6 +35,8 @@
 #include "../port_log.h"
 #include "gdx_vr_system.h"
 
+#include <sfvr/sfvr_haptics.h>
+
 #include <initializer_list>
 #include <utility>
 
@@ -64,6 +66,8 @@ extern "C" int gdx_vr_world_sprite_lookup(int id, float out[8]);
 // libultraship interpreter.cpp: VR sprites drawn by the last replay.
 extern "C" int gGdxVrWorldSpritesLastRun;
 extern "C" int gGdxVrHudSpritesLastRun;
+// port/input_bridge.c: the motor level the game last commanded per port (1 = rumbling).
+extern "C" int gGdxVrMotorOn[4];
 // port/input_bridge.c: merges headset-controller input into pad 1 while set.
 extern "C" void (*gGdxVrInputMerge)(GdxInputPad* pad);
 
@@ -172,6 +176,9 @@ struct XrInput {
     XrAction sysView = XR_NULL_HANDLE;
     gdx_vr::ViewButton viewBtn;
     double viewBPulseUntil = 0.0; // seconds; N64 B is held until then after a short press
+    // Haptics (standard.md section 6): everything submitted during a host iteration coalesces here
+    // and is flushed once per XR frame (FlushHaptics), scaled by gEnhancements.VR.Haptics.
+    sfvr_haptic_queue haptics{};
     XrAction hapticLeft = XR_NULL_HANDLE;  // vibration output, left hand
     XrAction hapticRight = XR_NULL_HANDLE; // vibration output, right hand
     XrAction view = XR_NULL_HANDLE; // C-right: F-Zero X cycles the race camera view on it
@@ -318,11 +325,11 @@ void InitSettings() {
         CVarSave();
     }
     gdx_port_logf("[vr] settings: stereo=%d wide_cull=%d camera_mode=%d horizon_lock=%d level_pitch=%d "
-                  "hud_aspect=%.3f hud_height=%.2f nose_forward=%.1f nose_up=%.1f world_scale=%.1f%s\n",
+                  "hud_aspect=%.3f hud_height=%.2f nose_forward=%.1f nose_up=%.1f world_scale=%.1f haptics=%.2f%s\n",
                   SettingInt(kSetStereo), SettingInt(kSetWideCull), SettingInt(kSetCameraMode),
                   SettingInt(kSetHorizonLock), SettingInt(kSetLevelPitch), SettingFloat(kSetHudAspect), SettingFloat(kSetHudHeight),
                   SettingFloat(kSetNoseForward), SettingFloat(kSetNoseUp), SettingFloat(kSetWorldScale),
-                  dirty ? " (saved)" : "");
+                  SettingFloat(kSetHaptics), dirty ? " (saved)" : "");
 }
 
 // Ask for a recentre at the next stereo frame boundary (UpdateRecenter, from xrWaitFrame). Requests
@@ -666,22 +673,30 @@ bool CreateInput() {
     return true;
 }
 
-// Buzz both hands. Only valid after a successful xrSyncActions this tick (the haptic actions must
-// be in an active action set), and while focused.
-void BuzzBothHands(const gdx_vr::Haptic& h) {
+void ApplyHaptic(int hand, float amplitude, float seconds, void*) {
     State& s = S();
-    for (XrAction action : { s.input.hapticLeft, s.input.hapticRight }) {
-        XrHapticActionInfo hai{ XR_TYPE_HAPTIC_ACTION_INFO };
-        hai.action = action;
-        XrHapticVibration vib{ XR_TYPE_HAPTIC_VIBRATION };
-        vib.amplitude = h.amplitude;
-        vib.duration = (XrDuration)h.durationMs * 1000000;
-        vib.frequency = XR_FREQUENCY_UNSPECIFIED;
-        const XrResult r = xrApplyHapticFeedback(s.session, &hai, reinterpret_cast<const XrHapticBaseHeader*>(&vib));
-        if (XR_FAILED(r)) {
-            gdx_port_logf("[vr] haptic failed (%d)\n", (int)r);
-        }
+    XrHapticActionInfo hai{ XR_TYPE_HAPTIC_ACTION_INFO };
+    hai.action = hand == SFVR_HAND_LEFT ? s.input.hapticLeft : s.input.hapticRight;
+    XrHapticVibration vib{ XR_TYPE_HAPTIC_VIBRATION };
+    vib.amplitude = amplitude;
+    vib.duration = (XrDuration)std::lround((double)seconds * 1e9);
+    vib.frequency = XR_FREQUENCY_UNSPECIFIED;
+    const XrResult r = xrApplyHapticFeedback(s.session, &hai, reinterpret_cast<const XrHapticBaseHeader*>(&vib));
+    if (XR_FAILED(r)) {
+        gdx_port_logf("[vr] haptic failed (%d)\n", (int)r);
     }
+}
+
+// Play what was submitted since the last XR frame, once. Called from BeginPending, which every
+// presentation path runs exactly once per XR frame. Needs a focused session whose action set has
+// been synced (SyncInput); otherwise whatever is queued is dropped, so a buzz never plays late.
+void FlushHaptics() {
+    State& s = S();
+    if (!s.input.ready || !s.focused) {
+        sfvr_haptic_queue_clear(&s.input.haptics);
+        return;
+    }
+    sfvr_haptic_flush(&s.input.haptics, SettingFloat(kSetHaptics), &ApplyHaptic, nullptr);
 }
 
 void SyncInput() {
@@ -690,6 +705,7 @@ void SyncInput() {
     in.any = false;
     if (!in.ready || !s.focused) {
         in.viewBtn.Reset(); // a press in progress when focus is lost must not fire later
+        sfvr_haptic_queue_clear(&in.haptics);
         return;
     }
     XrActiveActionSet active{ in.set, XR_NULL_PATH };
@@ -734,11 +750,11 @@ void SyncInput() {
     const gdx_vr::ViewEvents ve = in.viewBtn.Update(boolean(in.sysView), nowSec);
     if (ve.recentre) {
         RequestRecentre(gdx_vr::RecentreKind::Level, "View hold 1 s");
-        BuzzBothHands(gdx_vr::kSystemBuzz);
+        sfvr_haptic_event(&in.haptics, SFVR_HAND_BOTH, SFVR_HAPTIC_SYSTEM);
     }
     if (ve.recentreHeight) {
         RequestRecentre(gdx_vr::RecentreKind::Height, "View hold 3 s");
-        BuzzBothHands(gdx_vr::kSystemBuzz);
+        sfvr_haptic_event(&in.haptics, SFVR_HAND_BOTH, SFVR_HAPTIC_SYSTEM);
     }
     if (ve.shortPress && !s.lastTickStereo && !s.raceDrawnLastTick) {
         // The game polls pads once per tick and a tap can end between ticks: hold B for 100 ms.
@@ -746,6 +762,12 @@ void SyncInput() {
     }
     if (nowSec < in.viewBPulseUntil) {
         buttons |= 0x4000; // B
+    }
+    // N64 rumble: the game switches the motor on and off on its own duty cycle; while it is on,
+    // submit a rumble pulse every host iteration (40 ms each, so consecutive "on" ticks join up
+    // and the game's off gaps stay as gaps). Both hands: the pak has no handedness.
+    if (gGdxVrMotorOn[0] != 0) {
+        sfvr_haptic_rumble(&in.haptics, SFVR_HAND_BOTH, 0xFFFFu, 0xFFFFu);
     }
     const bool cameraModeNow = boolean(in.cameraMode);
     if (cameraModeNow && !in.cameraModeHeld) {
@@ -1160,6 +1182,7 @@ void CountTick() {
 
 bool BeginPending() {
     State& s = S();
+    FlushHaptics();
     XrFrameBeginInfo fbi{ XR_TYPE_FRAME_BEGIN_INFO };
     return Check(xrBeginFrame(s.session, &fbi), "xrBeginFrame");
 }
