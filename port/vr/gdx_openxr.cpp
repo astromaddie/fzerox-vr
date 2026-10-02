@@ -225,7 +225,7 @@ struct State {
     bool recenterValid = false;
     Quat recenterYaw{ 0.0f, 0.0f, 0.0f, 1.0f };
     Vec3 recenterPos{ 0.0f, 0.0f, 0.0f }; // head position at the last recentre of either kind
-    float heightAnchor = 0.0f;            // LOCAL y that counts as "game camera height"
+    float heightAnchor = 0.0f;            // LOCAL y of the game camera and of the flat menu quad
 
     // Stereo only while Race_Draw is really drawing (see gGdxVrRaceDrawCount).
     unsigned int raceDrawCountSeen = 0;
@@ -1196,10 +1196,13 @@ void EndPendingWithQuad() {
         quad.subImage.swapchain = s.quad.handle;
         quad.subImage.imageRect.offset = { 0, 0 };
         quad.subImage.imageRect.extent = { s.quad.width, s.quad.height };
-        // kQuadDistance ahead of where the viewer faced at the last recentre, at their eye height.
+        // kQuadDistance ahead of where the viewer faced at the last recentre. Yaw and horizontal
+        // position follow every recentre; the height is the height anchor, so it is re-anchored
+        // together with the eye poses (View hold 3 s, focus gain) and never left at a stale value.
+        // Before the first recentre lands the anchor is 0 (the LOCAL origin is at eye height).
         const Vec3 ahead = Rotate(s.recenterYaw, { 0.0f, 0.0f, -kQuadDistance });
         quad.pose.orientation = { s.recenterYaw.x, s.recenterYaw.y, s.recenterYaw.z, s.recenterYaw.w };
-        quad.pose.position = { s.recenterPos.x + ahead.x, s.recenterPos.y, s.recenterPos.z + ahead.z };
+        quad.pose.position = { s.recenterPos.x + ahead.x, s.heightAnchor, s.recenterPos.z + ahead.z };
         quad.size.width = kQuadWidth;
         quad.size.height = kQuadWidth * (float)s.quad.height / (float)s.quad.width;
         layers[0] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&quad);
