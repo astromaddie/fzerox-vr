@@ -4,6 +4,11 @@ Status: **M0 gates passed; flat-screen and stereo-race presentation implemented 
 Steam Frame** (unattended, headset in standby; not yet verified by a person wearing it). Sections 1-3
 record what the stock renderer does and what was measured; section 4 describes what was built.
 
+Not built yet (planned next wave): an in-headset **VR settings UI** (the `gEnhancements.VR.*` CVars
+are only reachable by editing the config file) and a **Quit to Steam** item. Until then the only exit
+is the runtime's own (the System button / Steam menu). The system layer on the controller (section 4,
+"System layer") is implemented but, like everything else here, not yet tried by a person in the headset.
+
 Target: optional OpenXR output mode (`GDX_OPENXR=ON` at build time, `--vr` / `GDX_VR=1` at launch)
 running natively on Steam Frame (Linux ARM64). Desktop behaviour with VR off must stay
 bit-identical, and `decomp/` changes must keep the retail build matching (see CONTRIBUTING.md).
@@ -258,6 +263,7 @@ release user, independent of VR, and is worth upstreaming on its own.
 | File | Role |
 | --- | --- |
 | `port/vr/gdx_vr_scheduler.*` | Display-time scheduler: places each XR frame on the 59.94 Hz tick timeline by `predictedDisplayTime`, says how many ticks must run first and at which interpolation t to render. Pure; `gdx_vr_scheduler_tests` (45 checks, incl. 72/90/120/144/45 Hz uniform steps and an hour without drift). |
+| `port/vr/gdx_vr_system.*` | System layer as pure policy: left View button hold/short-press timing, recentre-request merging (Level vs Height), the system haptic pulse, and the `gEnhancements.VR.*` settings table (names, defaults, clamp ranges). `gdx_vr_system_tests` (33 checks). |
 | `port/vr/gdx_vr_math.*` | Per-eye projection·view in the game's conventions; asymmetric XR FOV; s15.16 fit (uniform scale, NDC-invariant). `gdx_vr_math_tests` (34 checks) compares against a transcription of `Matrix_SetLookAt`/`Matrix_SetFrustrum`/`Camera_CalculateProjectionViewMtx`. |
 | `port/vr/gdx_openxr.*` | Instance/session/swapchains (GL, Xlib/GLX binding), session states, the shared frame protocol, flat quad, stereo projection layer, head-locked HUD quad, OpenXR controller actions, diagnostics. |
 | `libultraship` `Interpreter` | `gfx_pre_present_hook`; `SetVrEyeTarget` (offscreen eye-sized target, no MSAA/post shader/hor+ squash, overscan border scissors removed); `VrPass` world/HUD split at the HUD marker; texture rectangles dropped from world passes. |
@@ -283,7 +289,7 @@ Measured on the Frame (72 Hz runtime default, headset in standby, forced renderi
 | --- | --- |
 | `GDX_VR=1` | Same as `--vr`. |
 | `GDX_VR_FORCE_RENDER=1` | Render eyes even when the runtime says not to (headset in standby); synthetic straight-ahead pose if none is tracked. |
-| `GDX_VR_DUMP_FRAME=<n>` | Write both eyes (`vr-eye<e>-<n>.bmp`) and the HUD (`vr-hud.bmp`, with % transparent logged) of stereo frame n. |
+| `GDX_VR_DUMP_FRAME=<n>` | Write both eyes (`vr-eye<e>-<n>.bmp`) and the HUD rendered over black and over white (`vr-hud-black.bmp`, `vr-hud-white.bmp`; the two inputs of the alpha-recovery shader) of stereo frame n; each dump logs its % fully transparent pixels. |
 | `GDX_VR_DIAG_YAW=<deg>` | Turn the tracked head about LOCAL +y, to capture head turns unattended. |
 | `GDX_VR_DUMP_ON_SPRITE=1` | Dump the eyes of the first stereo frame that places a world sprite (`vr-sprite-eye<e>.bmp`) and the HUD of the first tick that draws a HUD sprite (`vr-sprite-hud.bmp`). |
 | `GDX_PERF=1` | Adds `[vr-perf]` every 600 XR frames: frames, tick-less frames, stereo frames, rebases, sim ticks, display period, per-eye render and copy ms. |
@@ -292,6 +298,15 @@ CVars: `gEnhancements.VR.Stereo` (1; 0 keeps races on the flat screen), `gEnhanc
 (10 world units per metre — the game's own scale: the HUD shows km/h as speed × 21.6 with speed in
 units per 60 Hz tick, i.e. 10 units = 1 m), `gEnhancements.VR.WideCull` (1),
 `gEnhancements.VR.HorizonLock` (0, default off: the viewer rolls with the chase camera; 1 removes that roll).
+
+Persistence and ranges: the first VR launch registers all ten `gEnhancements.VR.*` keys with their
+defaults and saves the libultraship config (`CVarSave`), so they appear in the config file and persist
+from then on. On load, out-of-range or non-finite values are clamped and written back (and a value of
+the wrong CVar type, e.g. `"HudHeight": 2`, is converted); every read clamps again. The log prints a
+`[vr] settings:` line with the effective values. Ranges: `Stereo`, `WideCull`, `CameraMode`,
+`HorizonLock`, `LevelPitch` 0..1; `HudAspect` 4/3..4 (default 1.5); `HudHeight` 0.3..3 m (1.2);
+`NoseForward`, `NoseUp` -40..40 world units (8, 6); `WorldScale` 2..50 (10). Chase/cockpit toggles also
+save `CameraMode`. There is no UI for any of them yet.
 
 ### Verified unattended (eye dumps at 0°, 90° and 180° head yaw)
 - Correct stereo: near objects shift the right way between eyes; the asymmetric eye frustums offset
@@ -322,15 +337,16 @@ units per 60 Hz tick, i.e. 10 units = 1 m), `gEnhancements.VR.WideCull` (1),
   (`/interaction_profiles/valve/frame_controller_valve`, extension
   `XR_VALVE_frame_controller_interaction`, paths per Steamworks "Steam Frame Input"): left stick →
   stick, right stick → C buttons, right A → A, right X → B (boost), right Y → C-right (change
-  view), left/right trigger → Z/R, left/right bumper → L/R, right menu → START, left D-pad →
-  D-pad, left stick click → recentre. Index/Touch bindings remain as fallbacks.
+  view), left trigger → Z, right trigger → R, left bumper → L, right bumper → R (the right trigger
+  and right bumper both send R), right menu → START, left D-pad → D-pad, left View → system layer
+  (below). Stick clicks are unbound. Index/Touch bindings remain as fallbacks. Triggers, bumpers and
+  grips are not final: gameplay remapping is a pending decision and was deliberately not touched.
 - Race HUD layer: rendered at `gEnhancements.VR.HudAspect` (default 1.5:1) with the widescreen HUD
   layout forced on, so edge-anchored elements sit at the panel sides; shown head-locked 1.5 m ahead,
   `gEnhancements.VR.HudHeight` metres tall (default 1.2). Coverage is recovered by rendering the HUD
   over black and over white and combining on the GPU.
-- Recentre: on gaining focus, at every flat↔stereo switch, and on left-stick click. Chase view is
-  levelled against the track's up (`Camera.racerBasis.y`; `gEnhancements.VR.LevelPitch`, default 1)
-  while still banking with it.
+- Recentre: see "System layer" below. Chase view is levelled against the track's up
+  (`Camera.racerBasis.y`; `gEnhancements.VR.LevelPitch`, default 1) while still banking with it.
 - Cockpit view (the plan's "Nose VR"): right B on the Frame controllers toggles chase ↔ cockpit
   (start mode `gEnhancements.VR.CameraMode`, 0 chase / 1 cockpit; `GDX_VR_COCKPIT=1` for tests).
   The eye is anchored at the followed racer's rendered position (`modelPos`) plus
@@ -341,4 +357,38 @@ units per 60 Hz tick, i.e. 10 units = 1 m), `gEnhancements.VR.WideCull` (1),
   capped at 2 units (0.2 m) so the machine's own nose is not clipped. Offsets are first guesses,
   not yet calibrated against machine geometry or tried in the headset.
 - No desktop mirror while in stereo, HUD always head-locked.
-- The flat quad is world-locked 2 m ahead of the last recentre.
+- The flat quad is world-locked 2 m ahead of the last recentre, at the height anchor (see below).
+
+### System layer
+The controls that are the same in every Steam Frame port (cross-port standard, section 1). Nothing
+else does system work: stick clicks and chords stay game actions.
+
+| Input | Action |
+| --- | --- |
+| Right Menu | N64 START (the game's pause) |
+| Left View, short press | N64 B, **only while no race is on screen** (flat menus), so it is Back there. In a race the short press does nothing, so it never collides with boost. B is sent on release and held for 100 ms (the game polls pads once per tick) |
+| Left View, hold 1 s | Recentre (yaw and horizontal position; height anchor kept), with a 0.6 amplitude / 80 ms buzz on both hands |
+| Left View, hold 3 s | Recentre and re-anchor the height (eye height and flat menu quad height), buzz again. The 1 s recentre has already fired by then |
+
+Index has no View button, so left A stands in for it; Touch uses left Y. Haptics are two vibration
+output actions (left and right) bound to `/output/haptic` on the Frame, Index and Touch profiles.
+
+Recentre details:
+- A recentre applies at an XR frame boundary (`xrWaitFrame`). It captures the head's yaw about LOCAL
+  +y and its horizontal position; eye poses and the flat quad are expressed relative to them. The
+  poses submitted to the compositor stay in raw LOCAL space.
+- The **height anchor** is the LOCAL height treated as the game camera's height (and the flat quad's
+  centre height). It changes only on Height recentres: View hold 3 s, gaining focus (possibly a
+  different wearer), the runtime's `XrEventDataReferenceSpaceChangePending` (a system recentre), and
+  the very first recentre.
+- Level recentres (yaw and position only): View hold 1 s, every flat↔stereo switch (each race and each
+  return to the menus starts facing forward), and the R-B chase/cockpit camera toggle. The camera
+  toggle recentre is kept deliberately (the two views are anchored differently); it is the one
+  recentre that is not on the system layer.
+- Requests that land before the next frame boundary merge into the stronger kind. A View press in
+  progress when focus is lost is dropped (it neither recentres nor sends B).
+- Log lines: `[vr] recentre requested (<why>, <what>)` and `[openxr] recentred: ... height anchor
+  <y> (updated|kept)`.
+
+Not verified on a headset: the View binding on the Frame profile, that the Frame profile accepts
+`/output/haptic`, the hold feel, and the buzz.
