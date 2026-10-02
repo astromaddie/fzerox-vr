@@ -47,6 +47,13 @@ struct PerfState {
     double subAccumMs[GDX_PERF_SUB_COUNT]{}; // summary window accumulation
     std::thread::id mainThread{};            // captured at PerfFrameBegin; sub timers guard against it
 
+    // Since-start sums of the numbers `logic` is derived from, read by the VR host (see
+    // gdx_perf_lifetime_ms). Only advance while telemetry is enabled.
+    double lifeGametickMs = 0.0;
+    double lifeXlateMs = 0.0;
+    double lifeRunMs = 0.0;
+    double lifeMirrorMs = 0.0;
+
     std::vector<double> frameTotals; // summary window frame totals (ms)
     int spikeCount = 0;
 
@@ -201,6 +208,11 @@ void PerfFrameEnd() {
     for (int i = 0; i < GDX_PERF_SUB_COUNT; ++i) {
         s.subAccumMs[i] += s.subMs[i];
     }
+    // Lifetime totals for the VR host's [vr-perf] stages (gdx_perf_lifetime_ms).
+    s.lifeGametickMs += s.phaseMs[PerfGameTick];
+    s.lifeXlateMs += s.subMs[GDX_PERF_SUB_XLATE];
+    s.lifeRunMs += s.subMs[GDX_PERF_SUB_RUN];
+    s.lifeMirrorMs += s.subMs[GDX_PERF_SUB_MIRROR];
     s.frameTotals.push_back(total);
 
     // The pacer/present phases legitimately wait for vsync, so the deliberate waits come out of
@@ -261,4 +273,14 @@ extern "C" void gdx_perf_sub_end(int id) {
         return;
     }
     s.subMs[id] += gdx::toMs(gdx::Clock::now() - s.subStart[id]);
+}
+
+// Since-start totals (ms) of the gametick phase and the xlate/run/mirror seams, for the VR host's
+// [vr-perf] line. They advance only while GDX_PERF telemetry is enabled; all four stay 0 otherwise.
+extern "C" void gdx_perf_lifetime_ms(double* gametick, double* xlate, double* run, double* mirror) {
+    const gdx::PerfState& s = gdx::state();
+    *gametick = s.lifeGametickMs;
+    *xlate = s.lifeXlateMs;
+    *run = s.lifeRunMs;
+    *mirror = s.lifeMirrorMs;
 }

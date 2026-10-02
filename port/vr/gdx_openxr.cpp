@@ -36,6 +36,7 @@
 #include "gdx_vr_system.h"
 
 #include <sfvr/sfvr_haptics.h>
+#include <sfvr/sfvr_perf.h>
 
 #include <initializer_list>
 #include <utility>
@@ -66,6 +67,9 @@ extern "C" int gdx_vr_world_sprite_lookup(int id, float out[8]);
 // libultraship interpreter.cpp: VR sprites drawn by the last replay.
 extern "C" int gGdxVrWorldSpritesLastRun;
 extern "C" int gGdxVrHudSpritesLastRun;
+// port/gdx_perf.cpp: since-start totals of the gametick phase and its xlate/run/mirror seams (ms).
+// They advance only while GDX_PERF telemetry is on.
+extern "C" void gdx_perf_lifetime_ms(double* gametick, double* xlate, double* run, double* mirror);
 // port/input_bridge.c: the motor level the game last commanded per port (1 = rumbling).
 extern "C" int gGdxVrMotorOn[4];
 // port/input_bridge.c: merges headset-controller input into pad 1 while set.
@@ -257,8 +261,19 @@ struct State {
     long long xrFramesNoTick = 0;
     long long stereoFrames = 0;
     long long rebases = 0;
-    double eyeMsSum = 0.0;
     double copyMsSum = 0.0;
+
+    // [vr-perf] (sfvr_perf, standard.md section 8). Stages: logic (game tick minus bridge work and
+    // the time spent inside the stereo present), xlate (display-list translation), irun (the eye
+    // replays), hud (the HUD pass). Per-frame values are what accrued since the previous XR frame.
+    sfvr_perf perf{};
+    bool perfReady = false;
+    double perfEyeMs[2] = { 0.0, 0.0 };
+    double perfIrunMs = 0.0;
+    double perfHudMs = 0.0;
+    double perfPresentMs = 0.0; // whole PresentStereoTick calls, which include xrWaitFrame blocking
+    double perfPrevLife[4] = { 0.0, 0.0, 0.0, 0.0 };
+    XrTime perfPrevDisplay = 0;
 };
 
 State& S() {
@@ -1137,6 +1152,51 @@ Pose Recentred(const XrPosef& p) {
     return { QMul(inv, q), pos };
 }
 
+const char* const kPerfStages[4] = { "logic", "xlate", "irun", "hud" };
+
+// Feed one XR frame to the [vr-perf] window and log the line when the window closes.
+void PerfFrame(const XrFrameState& fs) {
+    State& s = S();
+    const double nowS = NowMs() * 0.001;
+    if (!s.perfReady) {
+        sfvr_perf_init(&s.perf, SFVR_PERF_DEFAULT_WINDOW_S, kPerfStages, 4);
+        gdx_perf_lifetime_ms(&s.perfPrevLife[0], &s.perfPrevLife[1], &s.perfPrevLife[2], &s.perfPrevLife[3]);
+        s.perfReady = true;
+    }
+    double life[4];
+    gdx_perf_lifetime_ms(&life[0], &life[1], &life[2], &life[3]);
+    const double gametick = life[0] - s.perfPrevLife[0];
+    const double xlate = life[1] - s.perfPrevLife[1];
+    const double run = life[2] - s.perfPrevLife[2];
+    const double mirror = life[3] - s.perfPrevLife[3];
+    for (int i = 0; i < 4; i++) {
+        s.perfPrevLife[i] = life[i];
+    }
+    double logic = gametick - xlate - run - mirror - s.perfPresentMs;
+    if (logic < 0.0) {
+        logic = 0.0;
+    }
+    const float stages[4] = { (float)logic, (float)xlate, (float)s.perfIrunMs, (float)s.perfHudMs };
+    const float eyes[2] = { (float)s.perfEyeMs[0], (float)s.perfEyeMs[1] };
+    // A frame is missed when the runtime's predicted display time jumped by more than one and a
+    // half display periods since the previous frame (we were late and a refresh went by).
+    const bool missed = s.perfPrevDisplay != 0 && fs.predictedDisplayPeriod > 0 &&
+                        (fs.predictedDisplayTime - s.perfPrevDisplay) * 2 > fs.predictedDisplayPeriod * 3;
+    s.perfPrevDisplay = fs.predictedDisplayTime;
+    sfvr_perf_add_frame(&s.perf, nowS, missed ? 1 : 0, stages, eyes, -1.0f); // no GPU timing yet
+    s.perfIrunMs = s.perfHudMs = s.perfPresentMs = 0.0;
+    s.perfEyeMs[0] = s.perfEyeMs[1] = 0.0;
+    char line[256];
+    if (sfvr_perf_poll(&s.perf, nowS, line, sizeof(line))) {
+        gdx_port_logf("%s\n", line);
+        const double n = (s.stereoFrames > 0) ? (double)s.stereoFrames : 1.0;
+        gdx_port_logf("[vr] pacing: xr_frames=%lld no_tick=%lld stereo=%lld rebases=%lld sim_ticks=%lld "
+                      "period=%.3fms copy_ms=%.2f (logic/xlate need GDX_PERF=1)\n",
+                      s.xrFrames, s.xrFramesNoTick, s.stereoFrames, s.rebases, s.scheduler.TicksRun(),
+                      (double)fs.predictedDisplayPeriod * 1e-6, s.copyMsSum / (2.0 * n));
+    }
+}
+
 // Make sure a waited frame exists, planning how many ticks it needs.
 bool EnsurePending() {
     State& s = S();
@@ -1158,13 +1218,7 @@ bool EnsurePending() {
     s.pending.state = fs;
     s.pending.ticksOwed = plan.ticksToRun;
     s.xrFrames++;
-    if ((s.xrFrames % 600) == 0) {
-        const double n = (s.stereoFrames > 0) ? (double)s.stereoFrames : 1.0;
-        gdx_port_logf("[vr-perf] xr_frames=%lld no_tick=%lld stereo=%lld rebases=%lld sim_ticks=%lld "
-                      "period=%.3fms eye_ms=%.2f copy_ms=%.2f\n",
-                      s.xrFrames, s.xrFramesNoTick, s.stereoFrames, s.rebases, s.scheduler.TicksRun(),
-                      (double)fs.predictedDisplayPeriod * 1e-6, s.eyeMsSum / (2.0 * n), s.copyMsSum / (2.0 * n));
-    }
+    PerfFrame(fs);
     return true;
 }
 
@@ -1718,6 +1772,12 @@ void PresentStereoTick(const StereoCallbacks& cb) {
     if (s.countedHostTick == s.hostTick) {
         return; // a later gfx task of a tick that already presented
     }
+    // Everything below, including xrWaitFrame's blocking, runs inside the game tick; [vr-perf]
+    // subtracts it from the tick time to get `logic`.
+    struct PresentTimer {
+        double t0 = NowMs();
+        ~PresentTimer() { S().perfPresentMs += NowMs() - t0; }
+    } presentTimer;
     s.countedHostTick = s.hostTick;
     CountTick();
 
@@ -1808,7 +1868,8 @@ void PresentStereoTick(const StereoCallbacks& cb) {
                         }
                         CopyIntoSwapchain(s.eyes[e], tex, s.eyes[e].width, s.eyes[e].height);
                     }
-                    s.eyeMsSum += t1 - t0;
+                    s.perfEyeMs[e] += t1 - t0;
+                    s.perfIrunMs += t1 - t0;
                     s.copyMsSum += NowMs() - t1;
                     projViews[e].pose = views[e].pose;
                     projViews[e].fov = views[e].fov;
@@ -1820,7 +1881,9 @@ void PresentStereoTick(const StereoCallbacks& cb) {
                 // let later frames of the same tick show the released image again.
                 if (cb.renderHud != nullptr && s.hudRenderedTick != s.hostTick) {
                     s.hudRenderedTick = s.hostTick;
+                    const double hudT0 = NowMs();
                     RenderHudLayer(cb);
+                    s.perfHudMs += NowMs() - hudT0;
                 }
                 if (s.eyes[0].hasImage && s.eyes[1].hasImage) {
                     if (s.pending.state.shouldRender) {
