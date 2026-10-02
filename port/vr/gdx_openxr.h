@@ -84,6 +84,13 @@ bool ActiveEyeWorldFrame(float pos[3], float forward[3], float up[3], float* tan
 // Mean vertical half-FOV tangent of the eye being rendered (0 outside an eye replay).
 float ActiveEyeTanHalfY();
 
+// In-headset menu support (the G-Diffuser menu's VR page, opened with Menu + View held 0.5 s).
+// "Quit to Steam": request a clean session exit (xrRequestExitSession); the host loop leaves once the
+// runtime reaches EXITING, or after 3 s regardless. Without a running session it exits directly.
+void QuitToSteam();
+// Write every gEnhancements.VR.* CVar back to its default and save.
+void ResetSettingsToDefaults();
+
 // True when the runtime has asked the application to exit (session EXITING / instance loss).
 bool ExitRequested();
 

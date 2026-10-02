@@ -72,6 +72,10 @@
 
 using namespace gdxmenu;
 
+#ifdef GDX_OPENXR
+#include "vr/gdx_openxr.h" // the VR tab: QuitToSteam, ResetSettingsToDefaults
+#endif
+
 // From port/input_bridge.c: nonzero while an on-track race is live. Declared here rather than
 // including the bridge header (this TU needs nothing else from it); the signature matches exactly.
 // Drives DISABLE_FOR_RACE_IN_PROGRESS.
@@ -975,6 +979,16 @@ void GdxMenu::RegisterMenu() {
 
     // Sections, in tab order. Each remembers its own last-viewed page, so switching tabs and back
     // returns you where you were.
+#ifdef GDX_OPENXR
+    // The VR tab exists only when the game was launched with --vr / GDX_VR=1, and comes first so the
+    // headset's Menu + View chord (which opens the menu on it) lands on the first tab.
+    const bool vrTab = gdx_vr::Requested();
+#else
+    const bool vrTab = false;
+#endif
+    if (vrTab) {
+        AddMenuEntry("VR", "gSettings.Menu.Sidebar.VR");
+    }
     AddMenuEntry("Settings", "gSettings.Menu.Sidebar.Settings");
     AddMenuEntry("Enhancements", "gSettings.Menu.Sidebar.Enhancements");
     AddMenuEntry("Workshop", "gSettings.Menu.Sidebar.Workshop");
@@ -1030,6 +1044,168 @@ void GdxMenu::RegisterMenu() {
     AddSidebarEntry("Dev Tools", "Stats", 1, "stats fps frame timing performance interpolation sub-frames presented");
     AddSidebarEntry("Dev Tools", "Console", 1, "console commands log reset");
     AddSidebarEntry("Dev Tools", "Gfx Debugger", 1, "gfx graphics debugger display list rendering");
+
+#ifdef GDX_OPENXR
+    // ═════════════════════════════════════════════════════════════════════════════════════════
+    // VR -> VR Settings (headset launches only; opened by holding Menu + View for 0.5 s)
+    //
+    // Every control is a gEnhancements.VR.* CVar read live by port/vr/gdx_openxr.cpp, which also
+    // clamps it (ranges in port/vr/gdx_vr_system.cpp; the slider ranges below match). The page is
+    // deliberately minimal: a first pass of the cross-port VR settings page (standard.md section 7),
+    // not the full tab set. Refresh rate and HUD aspect are noted where they only apply later.
+    // ═════════════════════════════════════════════════════════════════════════════════════════
+    if (vrTab) {
+        AddSidebarEntry("VR", "VR Settings", 1,
+                        "vr headset comfort horizon lock level pitch cockpit chase camera world scale hud height "
+                        "aspect haptics rumble refresh rate recentre height quit steam exit");
+
+        AddWidget("VR", "VR Settings", SECTION_COLUMN_1,
+                  WidgetInfo{ .name = "Comfort", .type = GdxUI::WIDGET_SEPARATOR_TEXT });
+        AddWidget("VR", "VR Settings", SECTION_COLUMN_1,
+                  WidgetInfo{ .name = "Horizon lock", .cVar = "gEnhancements.VR.HorizonLock",
+                              .type = GdxUI::WIDGET_CVAR_CHECKBOX }
+                      .Options(UIWidgets::CheckboxOptions().DefaultValue(false).Tooltip(
+                          "Keeps the chase camera's heading and pitch but not its roll, so your view stays\n"
+                          "level while the track banks in pipes and loops."))
+                      .SearchTerms("roll level comfort motion sickness"));
+        AddWidget("VR", "VR Settings", SECTION_COLUMN_1,
+                  WidgetInfo{ .name = "Level chase camera pitch", .cVar = "gEnhancements.VR.LevelPitch",
+                              .type = GdxUI::WIDGET_CVAR_CHECKBOX }
+                      .Options(UIWidgets::CheckboxOptions().DefaultValue(true).Tooltip(
+                          "Levels the chase camera onto the track plane so you look down at your machine\n"
+                          "like a drone behind it, instead of tilting the whole world."))
+                      .SearchTerms("pitch tilt chase camera"));
+        AddWidget("VR", "VR Settings", SECTION_COLUMN_1,
+                  WidgetInfo{ .name = "Cockpit view", .cVar = "gEnhancements.VR.CameraMode",
+                              .type = GdxUI::WIDGET_CVAR_CHECKBOX }
+                      .Options(UIWidgets::CheckboxOptions().DefaultValue(false).Tooltip(
+                          "Ride just above the machine's windshield instead of the chase camera.\n"
+                          "Also toggled in a race with the right B button."))
+                      .SearchTerms("cockpit chase camera first person"));
+
+        AddWidget("VR", "VR Settings", SECTION_COLUMN_1,
+                  WidgetInfo{ .name = "View", .type = GdxUI::WIDGET_SEPARATOR_TEXT });
+        AddWidget("VR", "VR Settings", SECTION_COLUMN_1,
+                  WidgetInfo{ .name = "World scale (units per metre)", .cVar = "gEnhancements.VR.WorldScale",
+                              .type = GdxUI::WIDGET_CVAR_SLIDER_FLOAT }
+                      .Options(UIWidgets::FloatSliderOptions{ .flags = ImGuiSliderFlags_AlwaysClamp }
+                                   .Format("%.1f")
+                                   .Min(2.0f)
+                                   .Max(50.0f)
+                                   .Step(0.5f)
+                                   .DefaultValue(10.0f)
+                                   .ShowButtons(false)
+                                   .LabelPosition(UIWidgets::LabelPositions::Near)
+                                   .Tooltip("Game units per real metre. 10 is the game's own scale; lower makes\n"
+                                            "the world feel bigger, higher makes it feel smaller."))
+                      .SearchTerms("scale size giant miniature"));
+        AddWidget("VR", "VR Settings", SECTION_COLUMN_1,
+                  WidgetInfo{ .name = "HUD height (metres)", .cVar = "gEnhancements.VR.HudHeight",
+                              .type = GdxUI::WIDGET_CVAR_SLIDER_FLOAT }
+                      .Options(UIWidgets::FloatSliderOptions{ .flags = ImGuiSliderFlags_AlwaysClamp }
+                                   .Format("%.2f")
+                                   .Min(0.3f)
+                                   .Max(3.0f)
+                                   .Step(0.05f)
+                                   .DefaultValue(1.2f)
+                                   .ShowButtons(false)
+                                   .LabelPosition(UIWidgets::LabelPositions::Near)
+                                   .Tooltip("Size of the race HUD panel, 1.5 m in front of you."))
+                      .SearchTerms("hud size scale panel"));
+        AddWidget("VR", "VR Settings", SECTION_COLUMN_1,
+                  WidgetInfo{ .name = "HUD aspect (width / height)", .cVar = "gEnhancements.VR.HudAspect",
+                              .type = GdxUI::WIDGET_CVAR_SLIDER_FLOAT }
+                      .Options(UIWidgets::FloatSliderOptions{ .flags = ImGuiSliderFlags_AlwaysClamp }
+                                   .Format("%.2f")
+                                   .Min(4.0f / 3.0f)
+                                   .Max(4.0f)
+                                   .Step(0.05f)
+                                   .DefaultValue(1.5f)
+                                   .ShowButtons(false)
+                                   .LabelPosition(UIWidgets::LabelPositions::Near)
+                                   .Tooltip("Width of the race HUD panel relative to its height; edge-anchored HUD\n"
+                                            "elements sit at its sides. Read when the VR session starts."))
+                      .Note("(applies on restart)")
+                      .SearchTerms("hud width wide panel"));
+
+        AddWidget("VR", "VR Settings", SECTION_COLUMN_1,
+                  WidgetInfo{ .name = "Controls & display", .type = GdxUI::WIDGET_SEPARATOR_TEXT });
+        AddWidget("VR", "VR Settings", SECTION_COLUMN_1,
+                  WidgetInfo{ .name = "Haptics strength", .cVar = "gEnhancements.VR.Haptics",
+                              .type = GdxUI::WIDGET_CVAR_SLIDER_FLOAT }
+                      .Options(UIWidgets::FloatSliderOptions{ .flags = ImGuiSliderFlags_AlwaysClamp }
+                                   .IsPercentage()
+                                   .Min(0.0f)
+                                   .Max(1.0f)
+                                   .Step(0.05f)
+                                   .DefaultValue(0.6f)
+                                   .ShowButtons(false)
+                                   .LabelPosition(UIWidgets::LabelPositions::Near)
+                                   .Tooltip("Scales every controller vibration: the game's rumble and the\n"
+                                            "recentre buzz. 0% turns haptics off."))
+                      .SearchTerms("haptics rumble vibration controller buzz"));
+        AddWidget("VR", "VR Settings", SECTION_COLUMN_1,
+                  WidgetInfo{ .name = "Refresh rate (Hz)", .cVar = "gEnhancements.VR.RefreshRate",
+                              .type = GdxUI::WIDGET_CVAR_SLIDER_INT }
+                      .Options(UIWidgets::IntSliderOptions()
+                                   .Min(60)
+                                   .Max(144)
+                                   .DefaultValue(90)
+                                   .ShowButtons(false)
+                                   .LabelPosition(UIWidgets::LabelPositions::Near)
+                                   .Tooltip("The headset is asked for the highest refresh rate it offers at or below\n"
+                                            "this. If the game cannot hold it (under 90% for two 10 s windows)\n"
+                                            "it drops to 72 Hz for the rest of the session."))
+                      .SearchTerms("refresh rate hz 72 90 120 display"));
+
+        AddWidget("VR", "VR Settings", SECTION_COLUMN_1,
+                  WidgetInfo{ .name = "Room", .type = GdxUI::WIDGET_SEPARATOR_TEXT });
+        AddWidget("VR", "VR Settings", SECTION_COLUMN_1,
+                  WidgetInfo{ .name = "Recentre: hold the left View button 1 s (position and facing).\n"
+                                      "Hold it 3 s to also recalibrate your standing height.",
+                              .type = GdxUI::WIDGET_TEXT_DISABLED });
+        AddWidget("VR", "VR Settings", SECTION_COLUMN_1,
+                  WidgetInfo{ .name = "Reset VR settings", .type = GdxUI::WIDGET_CUSTOM }
+                      .CustomFunction([](WidgetInfo&) {
+                          if (ImGui::Button("Reset VR settings to defaults")) {
+                              gdx_vr::ResetSettingsToDefaults();
+                          }
+                      })
+                      .SearchTerms("defaults reset"));
+
+        AddWidget("VR", "VR Settings", SECTION_COLUMN_1,
+                  WidgetInfo{ .name = "Session", .type = GdxUI::WIDGET_SEPARATOR_TEXT });
+        AddWidget("VR", "VR Settings", SECTION_COLUMN_1,
+                  WidgetInfo{ .name = "Quit to Steam", .type = GdxUI::WIDGET_CUSTOM }
+                      .CustomFunction([](WidgetInfo&) {
+                          // Confirm first: this ends the VR session and closes the game.
+                          if (ImGui::Button("Quit to Steam")) {
+                              ImGui::OpenPopup("Quit to Steam?");
+                          }
+                          ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing,
+                                                  ImVec2(0.5f, 0.5f));
+                          if (ImGui::BeginPopupModal("Quit to Steam?", nullptr,
+                                                     ImGuiWindowFlags_AlwaysAutoResize |
+                                                         ImGuiWindowFlags_NoSavedSettings)) {
+                              ImGui::TextUnformatted("End the VR session and quit G-Diffuser?");
+                              ImGui::Spacing();
+                              if (ImGui::Button("Quit", ImVec2(110.0f, 0.0f))) {
+                                  gdx_vr::QuitToSteam();
+                                  ImGui::CloseCurrentPopup();
+                              }
+                              ImGui::SameLine();
+                              if (ImGui::Button("Cancel", ImVec2(110.0f, 0.0f)) ||
+                                  ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false)) {
+                                  ImGui::CloseCurrentPopup();
+                              }
+                              // Default-park the pad cursor on the non-destructive choice.
+                              ImGui::SetItemDefaultFocus();
+                              ImGui::EndPopup();
+                          }
+                      })
+                      .SearchTerms("quit exit leave steam close"));
+    }
+#endif
 
     // ═════════════════════════════════════════════════════════════════════════════════════════
     // SETTINGS -> General

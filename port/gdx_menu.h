@@ -30,6 +30,10 @@ class GdxMenu final : public Ship::GuiWindow {
     void Draw() override;
     void DrawElement() override;
 
+    // Switch to a top-level section by name (no-op for an unknown one). For hosts that open the menu
+    // on a specific page, such as the headset's VR page.
+    void OpenSection(const std::string& section) { SelectSection(section); }
+
   protected:
     void InitElement() override;
     void UpdateElement() override;

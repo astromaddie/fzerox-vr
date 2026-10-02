@@ -85,6 +85,30 @@ struct SettingInfo {
 
 const SettingInfo& Setting(SettingId id);
 
+// Two buttons held together for `holdSeconds` fire once (the headset menu chord: Menu + View, 0.5 s).
+// After it fires, Latched() stays true until both buttons are up, so the caller can keep the chord's
+// buttons away from the game (START must not pause the race behind the menu).
+class Chord {
+  public:
+    explicit Chord(double holdSeconds = 0.5) : hold_(holdSeconds) {}
+
+    // Returns true on the update where the chord fires (once per hold).
+    bool Update(bool a, bool b, double nowSeconds);
+    bool Latched() const { return fired_; }
+    void Reset();
+
+  private:
+    double hold_;
+    double since_ = 0.0;
+    bool both_ = false;
+    bool fired_ = false;
+};
+
+// A stick axis read as a D-pad direction for menu navigation, with hysteresis: it turns on above
+// 0.55 and stays on until it falls below 0.35. `positive` is the axis value signed toward the
+// direction (so "down" passes -y).
+bool StickAsDpad(bool wasOn, float positive);
+
 // The highest of `rates` (Hz, as enumerated by the runtime) that is <= hz, allowing 0.5 Hz of slack
 // for values such as 89.99; 0 when none qualifies or the list is empty.
 float PickRefreshRate(const float* rates, unsigned count, float hz);

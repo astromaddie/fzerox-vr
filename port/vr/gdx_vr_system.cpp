@@ -59,6 +59,34 @@ double SanitizeSetting(SettingId id, double value) {
     return value;
 }
 
+bool Chord::Update(bool a, bool b, double nowSeconds) {
+    bool fires = false;
+    if (a && b) {
+        if (!both_) {
+            both_ = true;
+            since_ = nowSeconds;
+        } else if (!fired_ && nowSeconds - since_ >= hold_) {
+            fired_ = true;
+            fires = true;
+        }
+    } else {
+        both_ = false;
+        if (!a && !b) {
+            fired_ = false;
+        }
+    }
+    return fires;
+}
+
+void Chord::Reset() {
+    both_ = false;
+    fired_ = false;
+}
+
+bool StickAsDpad(bool wasOn, float positive) {
+    return wasOn ? positive > 0.35f : positive > 0.55f;
+}
+
 float PickRefreshRate(const float* rates, unsigned count, float hz) {
     float chosen = 0.0f;
     for (unsigned i = 0; i < count; i++) {

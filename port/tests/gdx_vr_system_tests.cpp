@@ -152,6 +152,55 @@ static void CaseMerge() {
     check("merge height+none keeps height", MergeRecentre(RecentreKind::Height, RecentreKind::Idle) == RecentreKind::Height);
 }
 
+static void CaseChord() {
+    using gdx_vr::Chord;
+    // Holding both for 0.5 s fires exactly once and latches until both are released.
+    Chord c;
+    int fires = 0;
+    double firedAt = -1.0;
+    for (double t = 0.0; t < 2.0; t += 1.0 / 90.0) {
+        if (c.Update(true, true, t)) {
+            fires++;
+            if (firedAt < 0) firedAt = t;
+        }
+    }
+    check("chord: fires once at ~0.5 s", fires == 1 && std::fabs(firedAt - 0.5) < 0.02);
+    check("chord: latched while held", c.Latched());
+    c.Update(true, false, 2.1);
+    check("chord: still latched with one button down", c.Latched());
+    c.Update(false, false, 2.2);
+    check("chord: released after both are up", !c.Latched());
+    // Not long enough, or only one button: nothing.
+    Chord d;
+    int n = 0;
+    for (double t = 0.0; t < 0.45; t += 1.0 / 90.0) n += d.Update(true, true, t);
+    n += d.Update(true, false, 0.5);
+    check("chord: released at 0.45 s never fires", n == 0 && !d.Latched());
+    Chord e;
+    for (double t = 0.0; t < 3.0; t += 1.0 / 90.0) n += e.Update(true, false, t);
+    check("chord: one button alone never fires", n == 0);
+    // The two presses need not start together: the clock starts when both are down.
+    Chord f;
+    f.Update(true, false, 0.0);
+    f.Update(true, false, 1.0);
+    check("chord: clock starts when the second button joins", !f.Update(true, true, 1.0) && !f.Update(true, true, 1.4) &&
+                                                                  f.Update(true, true, 1.5));
+    // Reset forgets a chord attempt.
+    Chord g;
+    g.Update(true, true, 0.0);
+    g.Reset();
+    check("chord: reset restarts the clock", !g.Update(true, true, 0.6));
+}
+
+static void CaseStickAsDpad() {
+    using gdx_vr::StickAsDpad;
+    check("stick dpad: off below 0.55", !StickAsDpad(false, 0.5f));
+    check("stick dpad: on above 0.55", StickAsDpad(false, 0.6f));
+    check("stick dpad: stays on down to 0.36", StickAsDpad(true, 0.36f));
+    check("stick dpad: off below 0.35 once on", !StickAsDpad(true, 0.3f));
+    check("stick dpad: the opposite direction (negative) is off", !StickAsDpad(false, -0.9f));
+}
+
 static void CaseRefreshPick() {
     using gdx_vr::PickRefreshRate;
     const float steam[] = { 72.0f, 80.0f, 90.0f, 120.0f }; // unordered lists must work too
@@ -216,6 +265,8 @@ int main() {
     CaseReset();
     CaseFirstUpdateWhileDown();
     CaseMerge();
+    CaseChord();
+    CaseStickAsDpad();
     CaseRefreshPick();
     CaseSettings();
     std::printf("%d checks, %d failed\n", gChecks, gFails);

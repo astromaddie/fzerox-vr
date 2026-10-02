@@ -13,6 +13,7 @@
 // Before any X11 header: Xlib defines `None` as a macro, which breaks libultraship's enums.
 #include "fast/interpreter.h" // Fast::Interpreter::SetVrWorldSpriteResolver
 
+#include "../gdx_imgui_nav.h" // GdxImguiNavPad: feeds the ImGui menu from the XR actions
 #include "gdx_vr_math.h"
 #include "gdx_vr_scheduler.h"
 
@@ -67,6 +68,11 @@ extern "C" int gdx_vr_world_sprite_lookup(int id, float out[8]);
 // libultraship interpreter.cpp: VR sprites drawn by the last replay.
 extern "C" int gGdxVrWorldSpritesLastRun;
 extern "C" int gGdxVrHudSpritesLastRun;
+// port/gdx_menu.cpp: the full-screen G-Diffuser menu (libultraship Gui menu).
+bool GdxMenuIsVisible();
+bool GdxMenuShow(bool show, const char* section);
+// decomp/src/game/game.c: nonzero while the game is paused.
+extern "C" signed char gGamePaused;
 // port/gdx_perf.cpp: since-start totals of the gametick phase and its xlate/run/mirror seams (ms).
 // They advance only while GDX_PERF telemetry is on.
 extern "C" void gdx_perf_lifetime_ms(double* gametick, double* xlate, double* run, double* mirror);
@@ -183,6 +189,12 @@ struct XrInput {
     // Haptics (standard.md section 6): everything submitted during a host iteration coalesces here
     // and is flushed once per XR frame (FlushHaptics), scaled by gEnhancements.VR.Haptics.
     sfvr_haptic_queue haptics{};
+    // In-headset menu chord (Menu + View held together 0.5 s). While View is held, after the chord,
+    // or while the menu is open, START is not sent to the game.
+    gdx_vr::Chord chord{ 0.5 };
+    double startPulseUntil = 0.0; // a synthetic START (pausing / unpausing the game around the menu)
+    double backPulseUntil = 0.0;  // View short press while the menu is open: ImGui Back (closes it)
+    bool stickDir[4] = { false, false, false, false }; // left stick as D-pad for menu nav: U D L R
     XrAction hapticLeft = XR_NULL_HANDLE;  // vibration output, left hand
     XrAction hapticRight = XR_NULL_HANDLE; // vibration output, right hand
     XrAction view = XR_NULL_HANDLE; // C-right: F-Zero X cycles the race camera view on it
@@ -241,6 +253,13 @@ struct State {
     bool refreshWindowFocused = false; // focused for the whole window so far
     bool cockpit = false;            // cockpit view instead of the chase camera
     bool focused = false;
+
+    // In-headset VR menu: the G-Diffuser menu on the flat quad (docs/VR_ARCHITECTURE.md). Presentation
+    // is forced flat while it is visible; game input is withheld; XR actions drive its navigation.
+    bool menuOpen = false;
+    bool menuPausedGame = false; // we sent START to pause a race when the menu opened
+    int cameraModeSeen = -1;     // gEnhancements.VR.CameraMode as last applied to `cockpit`
+    double quitRequestedS = 0.0; // Quit to Steam: xrRequestExitSession time, 0 = not requested
 
     // App-level recentre: the head's yaw and position captured on request; rendered eye poses and
     // the flat quad are expressed relative to it, so "forward" is wherever the viewer faced then.
@@ -725,6 +744,40 @@ void FlushHaptics() {
     sfvr_haptic_flush(&s.input.haptics, SettingFloat(kSetHaptics), &ApplyHaptic, nullptr);
 }
 
+// Track the G-Diffuser menu's visibility (it can also be closed with Back or F1). Around a race the
+// game is paused for as long as the menu is up: opening sends the game one START (only when a race
+// is on screen and not already paused), closing sends another if that START did pause it.
+void SyncMenuState(const char* why) {
+    State& s = S();
+    const bool visible = GdxMenuIsVisible();
+    if (visible == s.menuOpen) {
+        return;
+    }
+    const double nowSec = NowMs() * 0.001;
+    s.menuOpen = visible;
+    if (visible) {
+        s.menuPausedGame = s.raceDrawnLastTick && gGamePaused == 0;
+        if (s.menuPausedGame) {
+            s.input.startPulseUntil = nowSec + 0.1;
+        }
+    } else {
+        if (s.menuPausedGame && gGamePaused != 0) {
+            s.input.startPulseUntil = nowSec + 0.1;
+        }
+        s.menuPausedGame = false;
+    }
+    gdx_port_logf("[vr] menu %s (%s)\n", visible ? "opened" : "closed", why);
+}
+
+// Show or hide the in-headset menu (the G-Diffuser menu, opened on its VR page).
+void SetMenuOpen(bool open, const char* why) {
+    if (!GdxMenuShow(open, "VR")) {
+        gdx_port_logf("[vr] menu: not available (%s)\n", why);
+        return;
+    }
+    SyncMenuState(why);
+}
+
 void SyncInput() {
     State& s = S();
     XrInput& in = s.input;
@@ -732,6 +785,8 @@ void SyncInput() {
     if (!in.ready || !s.focused) {
         in.viewBtn.Reset(); // a press in progress when focus is lost must not fire later
         sfvr_haptic_queue_clear(&in.haptics);
+        in.chord.Reset();
+        gdx_imgui_nav_set_external(nullptr);
         return;
     }
     XrActiveActionSet active{ in.set, XR_NULL_PATH };
@@ -763,7 +818,6 @@ void SyncInput() {
     if (boolean(in.a)) buttons |= 0x8000;     // A
     if (boolean(in.b)) buttons |= 0x4000;     // B
     if (boolean(in.z)) buttons |= 0x2000;     // Z
-    if (boolean(in.start)) buttons |= 0x1000; // START
     if (boolean(in.l)) buttons |= 0x0020;     // L
     if (boolean(in.r)) buttons |= 0x0010;     // R
     if (boolean(in.dUp)) buttons |= 0x0800;   // D-pad up
@@ -773,7 +827,26 @@ void SyncInput() {
     // System layer: left View. B is only sent for a short press outside races, so it is Back in the
     // flat menus and never doubles as boost in a race (any race on screen, stereo or not).
     const double nowSec = NowMs() * 0.001;
-    const gdx_vr::ViewEvents ve = in.viewBtn.Update(boolean(in.sysView), nowSec);
+    const bool startDown = boolean(in.start);
+    const bool viewDown = boolean(in.sysView);
+
+    // Menu chord: Menu + View held together 0.5 s toggles the in-headset menu (the pause menu cannot
+    // be extended cheaply in the decomp, so this is the standard's fallback for such games). Firing
+    // cancels the View press so its release is neither a short press nor a recentre hold.
+    if (in.chord.Update(startDown, viewDown, nowSec)) {
+        in.viewBtn.Reset();
+        sfvr_haptic_event(&in.haptics, SFVR_HAND_BOTH, SFVR_HAPTIC_UI_CLICK);
+        SetMenuOpen(!s.menuOpen, "Menu+View chord");
+    }
+    // START belongs to the game only when it is not part of a chord attempt or the menu: otherwise
+    // View-then-Menu would pause the race, and START would act on the game behind the open menu.
+    if (startDown && !viewDown && !in.chord.Latched() && !s.menuOpen) {
+        buttons |= 0x1000; // START
+    }
+    if (nowSec < in.startPulseUntil) {
+        buttons |= 0x1000;
+    }
+    const gdx_vr::ViewEvents ve = in.viewBtn.Update(viewDown, nowSec);
     if (ve.recentre) {
         RequestRecentre(gdx_vr::RecentreKind::Level, "View hold 1 s");
         sfvr_haptic_event(&in.haptics, SFVR_HAND_BOTH, SFVR_HAPTIC_SYSTEM);
@@ -782,11 +855,13 @@ void SyncInput() {
         RequestRecentre(gdx_vr::RecentreKind::Height, "View hold 3 s");
         sfvr_haptic_event(&in.haptics, SFVR_HAND_BOTH, SFVR_HAPTIC_SYSTEM);
     }
-    if (ve.shortPress && !s.lastTickStereo && !s.raceDrawnLastTick) {
+    if (ve.shortPress && s.menuOpen) {
+        in.backPulseUntil = nowSec + 0.1; // ImGui Back: closes the menu (libultraship toggles on it)
+    } else if (ve.shortPress && !s.lastTickStereo && !s.raceDrawnLastTick) {
         // The game polls pads once per tick and a tap can end between ticks: hold B for 100 ms.
         in.viewBPulseUntil = nowSec + 0.1;
     }
-    if (nowSec < in.viewBPulseUntil) {
+    if (nowSec < in.viewBPulseUntil && !s.menuOpen) {
         buttons |= 0x4000; // B
     }
     // N64 rumble: the game switches the motor on and off on its own duty cycle; while it is on,
@@ -796,13 +871,14 @@ void SyncInput() {
         sfvr_haptic_rumble(&in.haptics, SFVR_HAND_BOTH, 0xFFFFu, 0xFFFFu);
     }
     const bool cameraModeNow = boolean(in.cameraMode);
-    if (cameraModeNow && !in.cameraModeHeld) {
+    if (cameraModeNow && !in.cameraModeHeld && !s.menuOpen) {
         s.cockpit = !s.cockpit;
         RequestRecentre(gdx_vr::RecentreKind::Level, "camera toggle");
         gdx_interp_mark_cut_src("vr-camera-mode");
         gdx_port_logf("[openxr] camera -> %s\n", s.cockpit ? "cockpit" : "chase");
         // The chosen view is the next launch's starting view.
         CVarSetInteger(Setting(kSetCameraMode).cvar, s.cockpit ? 1 : 0);
+        s.cameraModeSeen = s.cockpit ? 1 : 0;
         CVarSave();
     }
     in.cameraModeHeld = cameraModeNow;
@@ -820,6 +896,33 @@ void SyncInput() {
         if (n < -80.0f) n = -80.0f;
         return (signed char)std::lround(n);
     };
+    if (s.menuOpen) {
+        // The menu has the controllers: nothing but the synthetic pause/unpause START reaches the game.
+        buttons &= 0x1000;
+        GdxImguiNavPad nav{};
+        // The left stick doubles as a D-pad (hysteresis 0.55 on / 0.35 off): the Index and Touch
+        // profiles have no D-pad, and ImGui spends the analog stick on scrolling, not selection.
+        const float dirValue[4] = { sy, -sy, -sx, sx }; // up, down, left, right
+        for (int d = 0; d < 4; d++) {
+            in.stickDir[d] = gdx_vr::StickAsDpad(in.stickDir[d], dirValue[d]);
+        }
+        nav.up = boolean(in.dUp) || in.stickDir[0];
+        nav.down = boolean(in.dDown) || in.stickDir[1];
+        nav.left = boolean(in.dLeft) || in.stickDir[2];
+        nav.right = boolean(in.dRight) || in.stickDir[3];
+        nav.confirm = boolean(in.a);
+        nav.cancel = boolean(in.b);
+        nav.back = nowSec < in.backPulseUntil;
+        nav.l1 = boolean(in.l);
+        nav.r1 = boolean(in.r);
+        gdx_imgui_nav_set_external(&nav);
+        sx = sy = 0.0f;
+    } else {
+        for (bool& d : in.stickDir) {
+            d = false;
+        }
+        gdx_imgui_nav_set_external(nullptr);
+    }
     in.pad.buttons = buttons;
     in.pad.stickX = toStick(sx);
     in.pad.stickY = toStick(sy);
@@ -1047,6 +1150,7 @@ bool CreateEverything() {
 
     // Starting camera: gEnhancements.VR.CameraMode (0 chase, 1 cockpit); GDX_VR_COCKPIT=1 for tests.
     s.cockpit = SettingInt(kSetCameraMode) == 1 || EnvFlag("GDX_VR_COCKPIT");
+    s.cameraModeSeen = SettingInt(kSetCameraMode);
     gdx_port_logf("[openxr] camera starts in %s view\n", s.cockpit ? "cockpit" : "chase");
     gfx_pre_present_hook = &PrePresentHook;
     Fast::Interpreter::SetVrWorldSpriteResolver([](uint32_t id, Fast::Interpreter::VrWorldSprite* out) {
@@ -1776,8 +1880,8 @@ void RenderHudLayer(const StereoCallbacks& cb) {
 
 bool StereoWanted() {
     State& s = S();
-    if (s.phase != Phase::Running || SettingInt(kSetStereo) == 0) {
-        return false;
+    if (s.phase != Phase::Running || SettingInt(kSetStereo) == 0 || s.menuOpen) {
+        return false; // the menu is a flat-quad affair: no stereo race while it is up
     }
     if (gNumPlayers != 1 || !s.raceDrawnLastTick) {
         return false;
@@ -1849,8 +1953,24 @@ bool BeginHostIteration() {
     }
 
     PollEvents();
+    if (s.quitRequestedS != 0.0 && !s.exitRequested && NowMs() * 0.001 - s.quitRequestedS > 3.0) {
+        // The runtime did not take the exit request to EXITING in time: leave anyway.
+        gdx_port_logf("[vr] quit: no EXITING from the runtime after 3 s, exiting\n");
+        s.exitRequested = true;
+    }
     if (s.phase != Phase::Running) {
         return true;
+    }
+    SyncMenuState("menu visibility changed");
+    // A CVar edit in the menu (Cockpit view) takes effect now, as a Level recentre like the toggle.
+    if (s.cameraModeSeen != SettingInt(kSetCameraMode)) {
+        if (s.cameraModeSeen >= 0) {
+            s.cockpit = SettingInt(kSetCameraMode) == 1;
+            RequestRecentre(gdx_vr::RecentreKind::Level, "camera view setting");
+            gdx_interp_mark_cut_src("vr-camera-mode");
+            gdx_port_logf("[openxr] camera -> %s (setting)\n", s.cockpit ? "cockpit" : "chase");
+        }
+        s.cameraModeSeen = SettingInt(kSetCameraMode);
     }
     SyncInput();
 
@@ -2152,8 +2272,35 @@ bool ActiveEyeWorldFrame(float pos[3], float forward[3], float up[3], float* tan
     return true;
 }
 
+void QuitToSteam() {
+    State& s = S();
+    if (s.session != XR_NULL_HANDLE && s.phase == Phase::Running) {
+        gdx_port_logf("[vr] quit to Steam: xrRequestExitSession\n");
+        if (XR_SUCCEEDED(xrRequestExitSession(s.session))) {
+            s.quitRequestedS = NowMs() * 0.001;
+            return;
+        }
+    }
+    gdx_port_logf("[vr] quit to Steam: no running session, exiting\n");
+    s.exitRequested = true;
+}
+
+void ResetSettingsToDefaults() {
+    for (int i = 0; i < kSettingCount; i++) {
+        const SettingInfo& si = Setting((SettingId)i);
+        if (si.isInteger) {
+            CVarSetInteger(si.cvar, (int32_t)si.def);
+        } else {
+            CVarSetFloat(si.cvar, (float)si.def);
+        }
+    }
+    CVarSave();
+    gdx_port_logf("[vr] settings reset to defaults\n");
+}
+
 void Shutdown() {
     State& s = S();
+    gdx_imgui_nav_set_external(nullptr);
     if (s.session != XR_NULL_HANDLE && s.phase == Phase::Running) {
         xrRequestExitSession(s.session);
     }

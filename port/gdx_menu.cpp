@@ -32,6 +32,7 @@
 #include "ship/window/Window.h"     // Ship::Window::GetGui() + the SetResolutionMultiplier/
                                     // SetMsaaLevel virtuals used to apply the graphics knobs live
 #include "ship/window/gui/Gui.h"    // Ship::Gui::{GetGuiWindow, SaveConsoleVariablesNextFrame}
+#include "ship/window/MouseStateManager.h" // GdxMenuShow: refresh mouse capture after a toggle
 #include "ship/window/gui/IconsFontAwesome4.h"
 #include "fast/Fast3dWindow.h"      // Fast::Fast3dWindow::SetTextureFilter + Fast::FilteringMode
 #include "fast/Fast3dGui.h"         // About page: LoadTextureFromRawImage + GetTextureByName (logo)
@@ -2503,4 +2504,40 @@ void GdxMenu::DrawCourseEditKeybinds(GdxUI::WidgetInfo& widget) {
     if (disabledByMaster) {
         ImGui::EndDisabled();
     }
+}
+
+// ── Host-driven open/close (the headset's Menu + View chord, port/vr/gdx_openxr.cpp) ─────────────
+// Free functions with C++ linkage so the VR host needs none of this file's ImGui/libultraship
+// headers. Both are main-thread only, like the rest of the menu.
+
+// True while the full-screen menu (or the legacy menu bar) is showing.
+bool GdxMenuIsVisible() {
+    auto gui = GdxGui();
+    return gui != nullptr && gui->GetMenuOrMenubarVisible();
+}
+
+// Show or hide the full-screen menu, optionally switching it to `section` first when showing.
+// Mirrors what Gui does for F1: flip the visibility, then refresh mouse capture. Returns false when
+// there is no GdxMenu to drive.
+bool GdxMenuShow(bool show, const char* section) {
+    auto gui = GdxGui();
+    if (gui == nullptr) {
+        return false;
+    }
+    auto menu = std::dynamic_pointer_cast<GdxMenu>(gui->GetMenu());
+    if (menu == nullptr) {
+        return false;
+    }
+    if (show && section != nullptr) {
+        menu->OpenSection(section);
+    }
+    if (menu->IsVisible() != show) {
+        menu->ToggleVisibility();
+        if (auto window = GdxWindow()) {
+            if (auto mouse = window->GetMouseStateManager()) {
+                mouse->UpdateMouseCapture();
+            }
+        }
+    }
+    return true;
 }

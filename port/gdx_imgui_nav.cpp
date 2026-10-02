@@ -19,6 +19,11 @@ SDL_GameController* sController = nullptr;
 // True while this module, rather than an ImGui platform backend, is the source of the gamepad keys.
 bool sOwnsFeed = false;
 
+// Pad state published by an external host (see gdx_imgui_nav.h); copied, so the caller's struct need
+// not outlive the call.
+GdxImguiNavPad sExternal{};
+bool sHaveExternal = false;
+
 // ImGui_ImplSDL2_UpdateGamepadAnalog's thumb deadzone, normalized. Matching it keeps the stick
 // feeling identical whichever of the two feeds is live on a given platform.
 constexpr float kStickDeadzone = 8000.0f / 32767.0f;
@@ -66,7 +71,50 @@ void FeedAxis(ImGuiIO& io, SDL_GameController* c, SDL_GameControllerAxis axis, I
     io.AddKeyAnalogEvent(posKey, pos > 0.0f, pos);
 }
 
+void FeedExternalAxis(ImGuiIO& io, float v, ImGuiKey negKey, ImGuiKey posKey) {
+    const float mag = (v < 0.0f) ? -v : v;
+    float out = 0.0f;
+    if (mag > kStickDeadzone) {
+        out = (mag - kStickDeadzone) / (1.0f - kStickDeadzone);
+        if (out > 1.0f) {
+            out = 1.0f;
+        }
+    }
+    io.AddKeyAnalogEvent(negKey, v < 0.0f && out > 0.0f, v < 0.0f ? out : 0.0f);
+    io.AddKeyAnalogEvent(posKey, v > 0.0f && out > 0.0f, v > 0.0f ? out : 0.0f);
+}
+
+// Same key set as the SDL feed below, from an external pad.
+void FeedExternalPad(ImGuiIO& io, bool canUseNavigation) {
+    io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
+    sOwnsFeed = true;
+    io.AddKeyEvent(ImGuiKey_GamepadBack, sExternal.back != 0);
+    if (!canUseNavigation) {
+        return;
+    }
+    io.AddKeyEvent(ImGuiKey_GamepadDpadUp, sExternal.up != 0);
+    io.AddKeyEvent(ImGuiKey_GamepadDpadDown, sExternal.down != 0);
+    io.AddKeyEvent(ImGuiKey_GamepadDpadLeft, sExternal.left != 0);
+    io.AddKeyEvent(ImGuiKey_GamepadDpadRight, sExternal.right != 0);
+    io.AddKeyEvent(ImGuiKey_GamepadFaceDown, sExternal.confirm != 0);
+    io.AddKeyEvent(ImGuiKey_GamepadFaceRight, sExternal.cancel != 0);
+    io.AddKeyEvent(ImGuiKey_GamepadL1, sExternal.l1 != 0);
+    io.AddKeyEvent(ImGuiKey_GamepadR1, sExternal.r1 != 0);
+    FeedExternalAxis(io, sExternal.stick_x, ImGuiKey_GamepadLStickLeft, ImGuiKey_GamepadLStickRight);
+    FeedExternalAxis(io, -sExternal.stick_y, ImGuiKey_GamepadLStickUp, ImGuiKey_GamepadLStickDown);
+}
+
 } // namespace
+
+extern "C" void gdx_imgui_nav_set_external(const GdxImguiNavPad* pad) {
+    if (pad == nullptr) {
+        sHaveExternal = false;
+        sExternal = GdxImguiNavPad{};
+        return;
+    }
+    sExternal = *pad;
+    sHaveExternal = true;
+}
 
 extern "C" void gdx_imgui_nav_tick(void) {
     if (ImGui::GetCurrentContext() == nullptr) {
@@ -101,6 +149,12 @@ extern "C" void gdx_imgui_nav_tick(void) {
     // whose XInput reader is compiled out (IMGUI_IMPL_WIN32_DISABLE_GAMEPAD, windows.cmake) because
     // it cannot see a raw DualSense.
     if (io.BackendFlags & ImGuiBackendFlags_HasGamepad) {
+        return;
+    }
+
+    if (sHaveExternal) {
+        // A headset host owns the pad; the physical SDL controller (if any) is not read.
+        FeedExternalPad(io, canUseNavigation);
         return;
     }
 
