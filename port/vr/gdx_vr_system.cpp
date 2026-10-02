@@ -33,6 +33,7 @@ const SettingInfo kSettings[kSettingCount] = {
     { "gEnhancements.VR.NoseUp", false, 6.0, -40.0, 40.0 },
     { "gEnhancements.VR.WorldScale", false, 10.0, 2.0, 50.0 },    // world units per metre
     { "gEnhancements.VR.Haptics", false, 0.6, 0.0, 1.0 },         // pulse strength scale
+    { "gEnhancements.VR.RefreshRate", true, 90.0, 60.0, 144.0 },  // Hz ceiling, highest offered <= it
 };
 
 } // namespace
@@ -56,6 +57,16 @@ double SanitizeSetting(SettingId id, double value) {
         return s.hi;
     }
     return value;
+}
+
+float PickRefreshRate(const float* rates, unsigned count, float hz) {
+    float chosen = 0.0f;
+    for (unsigned i = 0; i < count; i++) {
+        if (rates[i] <= hz + 0.5f && rates[i] > chosen) {
+            chosen = rates[i];
+        }
+    }
+    return chosen;
 }
 
 } // namespace gdx_vr

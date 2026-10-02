@@ -71,6 +71,7 @@ enum SettingId {
     kSetNoseUp,
     kSetWorldScale,
     kSetHaptics, // scale for every haptic pulse (standard.md section 6), 0 = off
+    kSetRefreshRate, // Hz ceiling for the display refresh-rate request (XR_FB_display_refresh_rate)
     kSettingCount
 };
 
@@ -83,6 +84,10 @@ struct SettingInfo {
 };
 
 const SettingInfo& Setting(SettingId id);
+
+// The highest of `rates` (Hz, as enumerated by the runtime) that is <= hz, allowing 0.5 Hz of slack
+// for values such as 89.99; 0 when none qualifies or the list is empty.
+float PickRefreshRate(const float* rates, unsigned count, float hz);
 
 // Clamp `value` into the setting's range. NaN and infinities fall back to the default; integer
 // settings are rounded to the nearest integer first.

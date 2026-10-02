@@ -228,6 +228,17 @@ struct State {
 
     XrInput input;
     bool frameControllerExt = false; // XR_VALVE_frame_controller_interaction enabled
+
+    // Display refresh rate (XR_FB_display_refresh_rate, when the runtime advertises it).
+    PFN_xrEnumerateDisplayRefreshRatesFB enumerateRates = nullptr;
+    PFN_xrRequestDisplayRefreshRateFB requestRate = nullptr;
+    PFN_xrGetDisplayRefreshRateFB getRate = nullptr;
+    int refreshWanted = 0;       // gEnhancements.VR.RefreshRate as last applied; 0 = not applied yet
+    float refreshTarget = 0.0f;  // rate actually requested from the runtime, Hz (0 = none)
+    int refreshMisses = 0;       // consecutive 10 s windows below 90% of the target
+    double refreshWindowStartS = 0.0;
+    long long refreshWindowFrames = 0;
+    bool refreshWindowFocused = false; // focused for the whole window so far
     bool cockpit = false;            // cockpit view instead of the chase camera
     bool focused = false;
 
@@ -340,11 +351,11 @@ void InitSettings() {
         CVarSave();
     }
     gdx_port_logf("[vr] settings: stereo=%d wide_cull=%d camera_mode=%d horizon_lock=%d level_pitch=%d "
-                  "hud_aspect=%.3f hud_height=%.2f nose_forward=%.1f nose_up=%.1f world_scale=%.1f haptics=%.2f%s\n",
+                  "hud_aspect=%.3f hud_height=%.2f nose_forward=%.1f nose_up=%.1f world_scale=%.1f haptics=%.2f refresh_rate=%d%s\n",
                   SettingInt(kSetStereo), SettingInt(kSetWideCull), SettingInt(kSetCameraMode),
                   SettingInt(kSetHorizonLock), SettingInt(kSetLevelPitch), SettingFloat(kSetHudAspect), SettingFloat(kSetHudHeight),
                   SettingFloat(kSetNoseForward), SettingFloat(kSetNoseUp), SettingFloat(kSetWorldScale),
-                  SettingFloat(kSetHaptics), dirty ? " (saved)" : "");
+                  SettingFloat(kSetHaptics), SettingInt(kSetRefreshRate), dirty ? " (saved)" : "");
 }
 
 // Ask for a recentre at the next stereo frame boundary (UpdateRecenter, from xrWaitFrame). Requests
@@ -834,6 +845,7 @@ void MergeXrInput(GdxInputPad* pad) {
 bool CreateEverything() {
     State& s = S();
     InitSettings();
+    bool refreshExt = false;
 
     // XR_VALVE_frame_controller_interaction gives the Steam Frame controllers their own binding
     // profile; enabled when the runtime offers it.
@@ -847,18 +859,36 @@ bool CreateEverything() {
             if (std::strcmp(p.extensionName, kFrameControllerExt) == 0) {
                 s.frameControllerExt = true;
             }
+            if (std::strcmp(p.extensionName, XR_FB_DISPLAY_REFRESH_RATE_EXTENSION_NAME) == 0) {
+                refreshExt = true;
+            }
         }
     }
-    const char* exts[] = { XR_KHR_OPENGL_ENABLE_EXTENSION_NAME, kFrameControllerExt };
+    std::vector<const char*> exts = { XR_KHR_OPENGL_ENABLE_EXTENSION_NAME };
+    if (s.frameControllerExt) {
+        exts.push_back(kFrameControllerExt);
+    }
+    if (refreshExt) {
+        exts.push_back(XR_FB_DISPLAY_REFRESH_RATE_EXTENSION_NAME);
+    }
+    gdx_port_logf("[openxr] XR_FB_display_refresh_rate %s\n", refreshExt ? "advertised" : "not advertised");
     XrInstanceCreateInfo ici{ XR_TYPE_INSTANCE_CREATE_INFO };
     std::strncpy(ici.applicationInfo.applicationName, "G-Diffuser", XR_MAX_APPLICATION_NAME_SIZE - 1);
     ici.applicationInfo.applicationVersion = 1;
     std::strncpy(ici.applicationInfo.engineName, "G-Diffuser", XR_MAX_ENGINE_NAME_SIZE - 1);
     ici.applicationInfo.apiVersion = XR_API_VERSION_1_0;
-    ici.enabledExtensionCount = s.frameControllerExt ? 2 : 1;
-    ici.enabledExtensionNames = exts;
+    ici.enabledExtensionCount = (uint32_t)exts.size();
+    ici.enabledExtensionNames = exts.data();
     if (!Check(xrCreateInstance(&ici, &s.instance), "xrCreateInstance")) {
         return false;
+    }
+    if (refreshExt) {
+        xrGetInstanceProcAddr(s.instance, "xrEnumerateDisplayRefreshRatesFB",
+                              reinterpret_cast<PFN_xrVoidFunction*>(&s.enumerateRates));
+        xrGetInstanceProcAddr(s.instance, "xrRequestDisplayRefreshRateFB",
+                              reinterpret_cast<PFN_xrVoidFunction*>(&s.requestRate));
+        xrGetInstanceProcAddr(s.instance, "xrGetDisplayRefreshRateFB",
+                              reinterpret_cast<PFN_xrVoidFunction*>(&s.getRate));
     }
 
     XrInstanceProperties ip{ XR_TYPE_INSTANCE_PROPERTIES };
@@ -1035,6 +1065,96 @@ void SetDesktopSwapBlocking(bool block) {
     SDL_GL_SetSwapInterval(block ? 1 : 0);
 }
 
+// --- Display refresh rate ----------------------------------------------------------------------
+//
+// gEnhancements.VR.RefreshRate (default 90) is a ceiling: the highest rate the runtime offers that
+// is <= it is requested. Higher rates are only worth it if the game holds them while worn, so the
+// monitor below falls back to 72 Hz after two consecutive 10 s windows in which the XR frame rate
+// stayed under 90% of the target (the same policy as the Halo port). The fallback lasts for the
+// session and is not written back to the CVar. The simulation is unaffected by any of this: the
+// scheduler places frames by predictedDisplayTime (tests/gdx_vr_scheduler_tests.cpp).
+
+// Ask the runtime for the best offered rate <= hz. Returns the rate requested, or 0.
+float RequestRefreshRate(float hz, const char* why) {
+    State& s = S();
+    if (s.enumerateRates == nullptr || s.requestRate == nullptr || s.session == XR_NULL_HANDLE) {
+        return 0.0f;
+    }
+    float rates[32];
+    uint32_t count = 0;
+    if (!Check(s.enumerateRates(s.session, 32, &count, rates), "xrEnumerateDisplayRefreshRatesFB")) {
+        return 0.0f;
+    }
+    char list[256];
+    size_t off = 0;
+    for (uint32_t i = 0; i < count && off + 16 < sizeof(list); i++) {
+        off += (size_t)std::snprintf(list + off, sizeof(list) - off, "%s%.0f", i == 0 ? "" : " ", rates[i]);
+    }
+    list[off < sizeof(list) ? off : sizeof(list) - 1] = '\0';
+    const float chosen = gdx_vr::PickRefreshRate(rates, count, hz);
+    if (chosen <= 0.0f || !Check(s.requestRate(s.session, chosen), "xrRequestDisplayRefreshRateFB")) {
+        gdx_port_logf("[vr] refresh rate: wanted <= %.0f Hz (%s); offered [%s]: none requested\n", (double)hz, why,
+                      list);
+        return 0.0f;
+    }
+    float current = 0.0f;
+    if (s.getRate != nullptr) {
+        s.getRate(s.session, &current);
+    }
+    gdx_port_logf("[vr] refresh rate: requested %.0f Hz (wanted <= %.0f, %s); offered [%s]; runtime reports %.1f Hz\n",
+                  (double)chosen, (double)hz, why, list, (double)current);
+    s.refreshTarget = chosen;
+    s.refreshMisses = 0;
+    s.refreshWindowStartS = 0.0;
+    s.refreshWindowFrames = 0;
+    return chosen;
+}
+
+// Once per XR frame, from PerfFrame's call site: applies a changed CVar and runs the fallback.
+void RefreshRateFrame(double nowS) {
+    State& s = S();
+    if (s.requestRate == nullptr) {
+        return;
+    }
+    const int wanted = SettingInt(kSetRefreshRate);
+    if (wanted != s.refreshWanted) {
+        s.refreshWanted = wanted;
+        RequestRefreshRate((float)wanted, s.refreshTarget == 0.0f ? "session start" : "setting changed");
+        return;
+    }
+    if (s.refreshTarget <= 72.5f) {
+        return; // nothing below 72 Hz is worth falling back from
+    }
+    if (s.refreshWindowStartS == 0.0 || s.focused != s.refreshWindowFocused) {
+        // A window only counts while worn: restart it whenever focus changes.
+        s.refreshWindowStartS = nowS;
+        s.refreshWindowFrames = 0;
+        s.refreshWindowFocused = s.focused;
+        s.refreshMisses = 0;
+        return;
+    }
+    s.refreshWindowFrames++;
+    const double seconds = nowS - s.refreshWindowStartS;
+    if (seconds < 10.0) {
+        return;
+    }
+    const double fps = (double)s.refreshWindowFrames / seconds;
+    s.refreshWindowStartS = nowS;
+    s.refreshWindowFrames = 0;
+    if (!s.focused) {
+        return;
+    }
+    if (fps < (double)s.refreshTarget * 0.9) {
+        if (++s.refreshMisses >= 2) {
+            gdx_port_logf("[vr] refresh rate: %.0f Hz not held (%.1f frames/s over 10 s, twice): back to 72 Hz\n",
+                          (double)s.refreshTarget, fps);
+            RequestRefreshRate(72.0f, "fallback");
+        }
+    } else {
+        s.refreshMisses = 0;
+    }
+}
+
 void HandleSessionState(XrSessionState st) {
     State& s = S();
     gdx_port_logf("[openxr] session state %s\n", SessionStateName(st));
@@ -1050,6 +1170,8 @@ void HandleSessionState(XrSessionState st) {
             sbi.primaryViewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
             if (Check(xrBeginSession(s.session, &sbi), "xrBeginSession")) {
                 s.phase = Phase::Running;
+                s.refreshWanted = 0; // (re)apply the refresh-rate setting on the first frame
+                s.refreshTarget = 0.0f;
                 s.scheduler.Reset();
                 s.pending = PendingFrame{};
                 SetDesktopSwapBlocking(false);
@@ -1085,6 +1207,10 @@ void PollEvents() {
             gdx_port_logf("[openxr] instance loss pending\n");
             s.phase = Phase::Exiting;
             s.exitRequested = true;
+        } else if (ev.type == XR_TYPE_EVENT_DATA_DISPLAY_REFRESH_RATE_CHANGED_FB) {
+            const auto* rc = reinterpret_cast<const XrEventDataDisplayRefreshRateChangedFB*>(&ev);
+            gdx_port_logf("[vr] display refresh rate changed: %.1f -> %.1f Hz\n", (double)rc->fromDisplayRefreshRate,
+                          (double)rc->toDisplayRefreshRate);
         } else if (ev.type == XR_TYPE_EVENT_DATA_REFERENCE_SPACE_CHANGE_PENDING) {
             // A system recentre (the runtime moves the LOCAL origin): treat it like our own, with
             // height, since the origin's height may have moved too.
@@ -1219,6 +1345,7 @@ bool EnsurePending() {
     s.pending.ticksOwed = plan.ticksToRun;
     s.xrFrames++;
     PerfFrame(fs);
+    RefreshRateFrame(NowMs() * 0.001);
     return true;
 }
 

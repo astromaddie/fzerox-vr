@@ -152,6 +152,20 @@ static void CaseMerge() {
     check("merge height+none keeps height", MergeRecentre(RecentreKind::Height, RecentreKind::Idle) == RecentreKind::Height);
 }
 
+static void CaseRefreshPick() {
+    using gdx_vr::PickRefreshRate;
+    const float steam[] = { 72.0f, 80.0f, 90.0f, 120.0f }; // unordered lists must work too
+    const float shuffled[] = { 120.0f, 72.0f, 90.0f, 80.0f };
+    check("wants 90: picks 90", PickRefreshRate(steam, 4, 90.0f) == 90.0f);
+    check("wants 90: order of the list is irrelevant", PickRefreshRate(shuffled, 4, 90.0f) == 90.0f);
+    check("wants 100: picks the highest offered below it", PickRefreshRate(steam, 4, 100.0f) == 90.0f);
+    check("wants 144: picks 120", PickRefreshRate(steam, 4, 144.0f) == 120.0f);
+    check("wants 72: picks 72", PickRefreshRate(steam, 4, 72.0f) == 72.0f);
+    check("wants 60 with nothing that low: picks nothing", PickRefreshRate(steam, 4, 60.0f) == 0.0f);
+    check("89.99 counts as 90", PickRefreshRate(steam, 4, 89.99f) == 90.0f);
+    check("empty list: nothing", PickRefreshRate(steam, 0, 90.0f) == 0.0f);
+}
+
 static void CaseSettings() {
     using namespace gdx_vr;
     const double nan = std::numeric_limits<double>::quiet_NaN();
@@ -177,6 +191,9 @@ static void CaseSettings() {
     check("haptics scale clamps to 0..1", SanitizeSetting(kSetHaptics, -0.5) == 0.0 &&
                                               SanitizeSetting(kSetHaptics, 3.0) == 1.0 &&
                                               SanitizeSetting(kSetHaptics, nan) == 0.6);
+    check("refresh rate clamps to 60..144 and rounds", SanitizeSetting(kSetRefreshRate, 10.0) == 60.0 &&
+                                                          SanitizeSetting(kSetRefreshRate, 500.0) == 144.0 &&
+                                                          SanitizeSetting(kSetRefreshRate, 89.6) == 90.0);
     check("in-range value is untouched", SanitizeSetting(kSetNoseForward, 12.5) == 12.5);
     check("negative nose offsets are allowed", SanitizeSetting(kSetNoseUp, -5.0) == -5.0);
     check("all CVar names are in the gEnhancements.VR namespace", [] {
@@ -199,6 +216,7 @@ int main() {
     CaseReset();
     CaseFirstUpdateWhileDown();
     CaseMerge();
+    CaseRefreshPick();
     CaseSettings();
     std::printf("%d checks, %d failed\n", gChecks, gFails);
     return gFails == 0 ? 0 : 1;

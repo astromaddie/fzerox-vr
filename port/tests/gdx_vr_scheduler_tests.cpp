@@ -107,6 +107,44 @@ static void CaseSteadyRate(double hz, double seconds) {
     checkNear(label, static_cast<double>(s.TicksRun()), expectedTicks, 1.0);
 }
 
+// The refresh-rate request can change the display period mid-session (and the auto-fallback drops
+// 90 Hz to 72 Hz while worn). The scheduler keys on display time, so a switch must not rebase, must
+// keep shown game time advancing by each frame's own display period, and must keep 59.94 ticks/s.
+static void CaseRateSwitch(double fromHz, double toHz) {
+    char label[160];
+    gdx_vr::Scheduler s;
+    double display = 50.0;
+    double prevDisplay = display;
+    double prevShown = 0.0;
+    double worst = 0.0;
+    int rebases = 0;
+    const int firstFrames = static_cast<int>(fromHz * 10.0);
+    const int secondFrames = static_cast<int>(toHz * 10.0);
+    for (int i = 0; i < firstFrames + secondFrames; i++) {
+        if (i > 0) {
+            display += 1.0 / (i <= firstFrames ? fromHz : toHz);
+        }
+        const FrameResult r = RunFrame(s, display);
+        if (r.rebased) {
+            rebases++;
+        }
+        if (i > 0) {
+            const double err = std::fabs((r.shownTicks - prevShown) - (display - prevDisplay) / kTick);
+            if (err > worst) {
+                worst = err;
+            }
+        }
+        prevShown = r.shownTicks;
+        prevDisplay = display;
+    }
+    std::snprintf(label, sizeof(label), "%.0f -> %.0f Hz switch: only the anchoring frame rebases", fromHz, toHz);
+    check(label, rebases == 1);
+    std::snprintf(label, sizeof(label), "%.0f -> %.0f Hz switch: displayed game time stays uniform", fromHz, toHz);
+    checkNear(label, worst, 0.0, 1e-4);
+    std::snprintf(label, sizeof(label), "%.0f -> %.0f Hz switch: simulation rate is 59.94 Hz", fromHz, toHz);
+    checkNear(label, static_cast<double>(s.TicksRun()), (display - 50.0) / kTick + 1.0, 1.0);
+}
+
 // Every rendered t must lie in [0, 1], and the first frame after a rebase renders the newest tick.
 static void CaseTRange() {
     gdx_vr::Scheduler s;
@@ -217,6 +255,8 @@ int main() {
     CaseSteadyRate(144.0, 60.0);
     CaseSteadyRate(45.0, 60.0); // runtime halving the frame rate under load
     CaseSteadyRate(90.0, 3600.0); // an hour: no drift, no rebase
+    CaseRateSwitch(90.0, 72.0);
+    CaseRateSwitch(72.0, 90.0);
     CaseTRange();
     CaseJitter();
     CaseMissedFrame();
