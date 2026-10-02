@@ -5,33 +5,16 @@
 namespace gdx_vr {
 
 ViewEvents ViewButton::Update(bool down, double nowSeconds) {
+    const unsigned bits = sfvr_view_update(&button_, nullptr, down ? 1 : 0, nowSeconds);
     ViewEvents ev;
-    if (down && !down_) {
-        down_ = true;
-        recentred_ = false;
-        heightDone_ = false;
-        downAt_ = nowSeconds;
-    } else if (down) {
-        const double held = nowSeconds - downAt_;
-        if (!heightDone_ && held >= kHeightSeconds) {
-            heightDone_ = true;
-            recentred_ = true;
-            ev.recentreHeight = true; // supersedes a 1 s recentre that was due in the same call
-        } else if (!recentred_ && held >= kRecentreSeconds) {
-            recentred_ = true;
-            ev.recentre = true;
-        }
-    } else if (down_) {
-        down_ = false;
-        ev.shortPress = !recentred_;
-    }
+    ev.shortPress = (bits & SFVR_VIEW_SHORT_PRESS) != 0;
+    ev.recentreHeight = (bits & SFVR_VIEW_RECALIBRATE_HEIGHT) != 0;
+    ev.recentre = (bits & SFVR_VIEW_RECENTRE) != 0 && !ev.recentreHeight;
     return ev;
 }
 
 void ViewButton::Reset() {
-    down_ = false;
-    recentred_ = false;
-    heightDone_ = false;
+    sfvr_view_reset(&button_);
 }
 
 namespace {

@@ -25,6 +25,14 @@ static void check(const char* what, bool ok) {
 using gdx_vr::ViewButton;
 using gdx_vr::ViewEvents;
 
+// sfvr ignores a press that is already down on the very first update, so a test button first sees
+// the button released (what the host does: it updates every iteration from startup).
+static ViewButton Primed() {
+    ViewButton b;
+    b.Update(false, -100.0);
+    return b;
+}
+
 // Feed a button held from t0 to t1 at ~90 Hz and count what fired.
 struct Tally {
     int shortPress = 0;
@@ -50,7 +58,7 @@ static void Feed(ViewButton& b, Tally& t, bool down, double from, double to, dou
 }
 
 static void CaseShortPress() {
-    ViewButton b;
+    ViewButton b = Primed();
     Tally t;
     Feed(b, t, false, 0.0, 1.0);
     Feed(b, t, true, 1.0, 1.4);  // 0.4 s tap
@@ -60,7 +68,7 @@ static void CaseShortPress() {
 }
 
 static void CaseJustUnderHold() {
-    ViewButton b;
+    ViewButton b = Primed();
     b.Update(true, 10.0);
     ViewEvents ev = b.Update(true, 10.0 + ViewButton::kRecentreSeconds - 0.001);
     check("0.999 s: no recentre yet", !ev.recentre && !ev.recentreHeight);
@@ -69,7 +77,7 @@ static void CaseJustUnderHold() {
 }
 
 static void CaseRecentreHold() {
-    ViewButton b;
+    ViewButton b = Primed();
     Tally t;
     Feed(b, t, true, 5.0, 7.0); // 2 s hold
     check("2 s hold: one level recentre at ~1 s", t.recentre == 1 && t.height == 0);
@@ -79,7 +87,7 @@ static void CaseRecentreHold() {
 }
 
 static void CaseHeightHold() {
-    ViewButton b;
+    ViewButton b = Primed();
     Tally t;
     Feed(b, t, true, 0.0, 4.0); // 4 s hold
     check("4 s hold: one level recentre and one height recentre", t.recentre == 1 && t.height == 1);
@@ -91,7 +99,7 @@ static void CaseHeightHold() {
 
 static void CaseSparseUpdates() {
     // A stalled host (one update 3.5 s after the press) must fire the height recentre once, not both.
-    ViewButton b;
+    ViewButton b = Primed();
     b.Update(true, 0.0);
     ViewEvents ev = b.Update(true, 3.5);
     check("gap past 3 s: only the height recentre fires", ev.recentreHeight && !ev.recentre);
@@ -100,7 +108,7 @@ static void CaseSparseUpdates() {
 }
 
 static void CaseRepeatPress() {
-    ViewButton b;
+    ViewButton b = Primed();
     Tally t;
     Feed(b, t, true, 0.0, 1.5);
     Feed(b, t, false, 1.5, 2.0);
@@ -110,7 +118,7 @@ static void CaseRepeatPress() {
 }
 
 static void CaseReset() {
-    ViewButton b;
+    ViewButton b = Primed();
     Tally t;
     Feed(b, t, true, 0.0, 0.3);
     b.Reset(); // focus lost mid-press
@@ -119,6 +127,20 @@ static void CaseReset() {
     // Held through a reset (button still down on focus return) starts a fresh hold.
     Feed(b, t, true, 1.0, 1.5);
     check("reset: a fresh press is not credited with the old hold time", t.recentre == 0);
+}
+
+static void CaseFirstUpdateWhileDown() {
+    // A button already down when updates begin (or resume after a Reset, e.g. focus regained with
+    // the button held) is ignored until released: no hold, no short press.
+    ViewButton b;
+    Tally t;
+    Feed(b, t, true, 0.0, 4.0);
+    Feed(b, t, false, 4.0, 4.5);
+    check("already down at the first update: ignored entirely",
+          t.shortPress == 0 && t.recentre == 0 && t.height == 0);
+    Feed(b, t, true, 5.0, 5.3);
+    Feed(b, t, false, 5.3, 5.6);
+    check("...and the next press works normally", t.shortPress == 1);
 }
 
 static void CaseMerge() {
@@ -172,6 +194,7 @@ int main() {
     CaseSparseUpdates();
     CaseRepeatPress();
     CaseReset();
+    CaseFirstUpdateWhileDown();
     CaseMerge();
     CaseSettings();
     std::printf("%d checks, %d failed\n", gChecks, gFails);

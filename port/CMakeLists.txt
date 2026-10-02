@@ -584,6 +584,24 @@ if(TARGET libultraship)
     )
 endif()
 
+# sfvr: the small C99 library shared by the Steam Frame VR ports (system layer, haptics, perf line,
+# settings registry). Vendored by copying from ~/code/sfvr; the pinned commit is in
+# third_party/sfvr/VERSION and the vendored files are never edited here (change sfvr, re-vendor).
+# Built as its own C99 library so the C sources are compiled as C even though the VR host is C++.
+add_library(gdx_sfvr STATIC
+    third_party/sfvr/src/sfvr_haptics.c
+    third_party/sfvr/src/sfvr_perf.c
+    third_party/sfvr/src/sfvr_room.c
+    third_party/sfvr/src/sfvr_settings.c
+    third_party/sfvr/src/sfvr_turn.c
+    third_party/sfvr/src/sfvr_view.c)
+target_include_directories(gdx_sfvr PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/third_party/sfvr/include)
+set_target_properties(gdx_sfvr PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF
+                      POSITION_INDEPENDENT_CODE ON)
+if(NOT MSVC)
+    target_link_libraries(gdx_sfvr PUBLIC m)
+endif()
+
 # Optional OpenXR output mode (docs/VR_ARCHITECTURE.md). Compiled in only when enabled, and even
 # then inert unless the game is launched with --vr or GDX_VR=1. The Khronos loader is pinned by
 # archive hash and linked statically, so a VR build ships no new shared library.
@@ -620,7 +638,7 @@ if(GDX_OPENXR)
 
     target_sources(G-Diffuser PRIVATE vr/gdx_openxr.cpp vr/gdx_vr_scheduler.cpp vr/gdx_vr_math.cpp vr/gdx_vr_system.cpp)
     target_compile_definitions(G-Diffuser PRIVATE GDX_OPENXR=1)
-    target_link_libraries(G-Diffuser PRIVATE OpenXR::openxr_loader OpenXR::headers)
+    target_link_libraries(G-Diffuser PRIVATE OpenXR::openxr_loader OpenXR::headers gdx_sfvr)
     message(STATUS "G-Diffuser: GDX_OPENXR=ON — OpenXR output mode compiled in (OpenXR-SDK 1.1.63, static loader)")
 endif()
 
@@ -653,6 +671,7 @@ endif()
 add_executable(gdx_vr_system_tests
     tests/gdx_vr_system_tests.cpp
     vr/gdx_vr_system.cpp)
+target_link_libraries(gdx_vr_system_tests PRIVATE gdx_sfvr)
 target_compile_features(gdx_vr_system_tests PRIVATE cxx_std_17)
 if(MSVC)
     target_compile_options(gdx_vr_system_tests PRIVATE /W3)

@@ -17,6 +17,8 @@
 #ifndef GDX_VR_SYSTEM_H
 #define GDX_VR_SYSTEM_H
 
+#include <sfvr/sfvr_view.h>
+
 namespace gdx_vr {
 
 // What a pending recentre should re-anchor. Level keeps the height anchor; Height replaces it too.
@@ -34,10 +36,15 @@ struct ViewEvents {
     bool recentreHeight = false;  // held 3 s (fires once per press; replaces recentre if both are due)
 };
 
+// Thin adapter over sfvr_view (port/third_party/sfvr, the cross-port library that owns the timing
+// rules). The adapter only maps the bitmask onto this port's three events; where sfvr reports both
+// hold events from one very late update, the height recentre supersedes the 1 s one.
+// Note sfvr's rule: a press already down on the first update after construction or Reset() is
+// ignored until the button is released and pressed again.
 class ViewButton {
   public:
-    static constexpr double kRecentreSeconds = 1.0;
-    static constexpr double kHeightSeconds = 3.0;
+    static constexpr double kRecentreSeconds = SFVR_VIEW_DEFAULT_RECENTRE_HOLD_S;
+    static constexpr double kHeightSeconds = SFVR_VIEW_DEFAULT_HEIGHT_HOLD_S;
 
     // Feed the button state once per host iteration. `nowSeconds` must be monotonic.
     ViewEvents Update(bool down, double nowSeconds);
@@ -46,10 +53,7 @@ class ViewButton {
     void Reset();
 
   private:
-    bool down_ = false;
-    bool recentred_ = false;
-    bool heightDone_ = false;
-    double downAt_ = 0.0;
+    sfvr_view_button button_{};
 };
 
 struct Haptic {
