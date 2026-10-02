@@ -4,10 +4,11 @@ Status: **M0 gates passed; flat-screen and stereo-race presentation implemented 
 Steam Frame** (unattended, headset in standby; not yet verified by a person wearing it). Sections 1-3
 record what the stock renderer does and what was measured; section 4 describes what was built.
 
-Not built yet (planned next wave): an in-headset **VR settings UI** (the `gEnhancements.VR.*` CVars
-are only reachable by editing the config file) and a **Quit to Steam** item. Until then the only exit
-is the runtime's own (the System button / Steam menu). The system layer on the controller (section 4,
-"System layer") is implemented but, like everything else here, not yet tried by a person in the headset.
+A minimal **in-headset VR settings page with Quit to Steam** exists (section 4, "In-headset menu"): the
+G-Diffuser menu's VR tab on the flat quad, opened by holding Menu + View for 0.5 s. It is not a full
+settings page (no tab set, no pointer, no gameplay or comfort-turn settings yet). The system layer, the
+menu, haptics, the refresh-rate request and the `[vr-perf]` line are implemented but, like everything
+else here, none of it has been tried by a person in the headset.
 
 Target: optional OpenXR output mode (`GDX_OPENXR=ON` at build time, `--vr` / `GDX_VR=1` at launch)
 running natively on Steam Frame (Linux ARM64). Desktop behaviour with VR off must stay
@@ -263,7 +264,8 @@ release user, independent of VR, and is worth upstreaming on its own.
 | File | Role |
 | --- | --- |
 | `port/vr/gdx_vr_scheduler.*` | Display-time scheduler: places each XR frame on the 59.94 Hz tick timeline by `predictedDisplayTime`, says how many ticks must run first and at which interpolation t to render. Pure; `gdx_vr_scheduler_tests` (45 checks, incl. 72/90/120/144/45 Hz uniform steps and an hour without drift). |
-| `port/vr/gdx_vr_system.*` | System layer as pure policy: left View button hold/short-press timing, recentre-request merging (Level vs Height), the system haptic pulse, and the `gEnhancements.VR.*` settings table (names, defaults, clamp ranges). `gdx_vr_system_tests` (33 checks). |
+| `port/vr/gdx_vr_system.*` | Pure policy, no OpenXR: an adapter over sfvr's View-button state machine, recentre-request merging (Level vs Height), the Menu + View chord, stick-as-D-pad for menu navigation, refresh-rate picking, and the `gEnhancements.VR.*` settings table (names, defaults, clamp ranges). `gdx_vr_system_tests` (58 checks). |
+| `port/third_party/sfvr/` | The shared cross-port VR library (C99), vendored by copying from `~/code/sfvr`; `VERSION` holds the pinned commit. Never edited here. Built as `gdx_sfvr`. Used for the View button, the haptic queue and the `[vr-perf]` line. |
 | `port/vr/gdx_vr_math.*` | Per-eye projection·view in the game's conventions; asymmetric XR FOV; s15.16 fit (uniform scale, NDC-invariant). `gdx_vr_math_tests` (34 checks) compares against a transcription of `Matrix_SetLookAt`/`Matrix_SetFrustrum`/`Camera_CalculateProjectionViewMtx`. |
 | `port/vr/gdx_openxr.*` | Instance/session/swapchains (GL, Xlib/GLX binding), session states, the shared frame protocol, flat quad, stereo projection layer, head-locked HUD quad, OpenXR controller actions, diagnostics. |
 | `libultraship` `Interpreter` | `gfx_pre_present_hook`; `SetVrEyeTarget` (offscreen eye-sized target, no MSAA/post shader/hor+ squash, overscan border scissors removed); `VrPass` world/HUD split at the HUD marker; texture rectangles dropped from world passes. |
@@ -292,12 +294,25 @@ Measured on the Frame (72 Hz runtime default, headset in standby, forced renderi
 | `GDX_VR_DUMP_FRAME=<n>` | Write both eyes (`vr-eye<e>-<n>.bmp`) and the HUD rendered over black and over white (`vr-hud-black.bmp`, `vr-hud-white.bmp`; the two inputs of the alpha-recovery shader) of stereo frame n; each dump logs its % fully transparent pixels. |
 | `GDX_VR_DIAG_YAW=<deg>` | Turn the tracked head about LOCAL +y, to capture head turns unattended. |
 | `GDX_VR_DUMP_ON_SPRITE=1` | Dump the eyes of the first stereo frame that places a world sprite (`vr-sprite-eye<e>.bmp`) and the HUD of the first tick that draws a HUD sprite (`vr-sprite-hud.bmp`). |
-| `GDX_PERF=1` | Adds `[vr-perf]` every 600 XR frames: frames, tick-less frames, stereo frames, rebases, sim ticks, display period, per-eye render and copy ms. |
+| `GDX_PERF=1` | Makes the `logic` and `xlate` stages of `[vr-perf]` real (they come from the port's GDX_PERF telemetry; they read 0.00 otherwise). |
+
+`[vr-perf]` is logged every 10 s while a session runs (sfvr_perf, the cross-port format):
+`[vr-perf] fps=71.9 missed=3 cpu=7.31ms logic=1.20 xlate=0.40 irun=5.02 hud=0.30 eye=2.21/2.19ms gpu=n/a`.
+`irun` is the per-eye interpreter replays (also shown per eye as `eye=`), `hud` the HUD pass, `xlate`
+display-list translation, `logic` the game tick minus translation, run, mirror and the time inside the
+stereo present (which includes xrWaitFrame's blocking). `missed` counts XR frames whose predicted
+display time jumped by more than 1.5 display periods. `gpu` is `n/a`: there is no GPU timing yet. A
+second line, `[vr] pacing: ...`, carries the old extras (tick-less and stereo frame counts, rebases, sim
+ticks, display period, copy ms). `logic` is a derived figure that has not been checked against a
+device run.
 
 CVars: `gEnhancements.VR.Stereo` (1; 0 keeps races on the flat screen), `gEnhancements.VR.WorldScale`
 (10 world units per metre — the game's own scale: the HUD shows km/h as speed × 21.6 with speed in
 units per 60 Hz tick, i.e. 10 units = 1 m), `gEnhancements.VR.WideCull` (1),
 `gEnhancements.VR.HorizonLock` (0, default off: the viewer rolls with the chase camera; 1 removes that roll).
+
+Also registered: `gEnhancements.VR.Haptics` (0..1, 0.6: scale for every haptic pulse) and
+`gEnhancements.VR.RefreshRate` (60..144, 90: Hz ceiling for the refresh-rate request).
 
 Persistence and ranges: the first VR launch registers all ten `gEnhancements.VR.*` keys with their
 defaults and saves the libultraship config (`CVarSave`), so they appear in the config file and persist
@@ -305,8 +320,9 @@ from then on. On load, out-of-range or non-finite values are clamped and written
 the wrong CVar type, e.g. `"HudHeight": 2`, is converted); every read clamps again. The log prints a
 `[vr] settings:` line with the effective values. Ranges: `Stereo`, `WideCull`, `CameraMode`,
 `HorizonLock`, `LevelPitch` 0..1; `HudAspect` 4/3..4 (default 1.5); `HudHeight` 0.3..3 m (1.2);
-`NoseForward`, `NoseUp` -40..40 world units (8, 6); `WorldScale` 2..50 (10). Chase/cockpit toggles also
-save `CameraMode`. There is no UI for any of them yet.
+`NoseForward`, `NoseUp` -40..40 world units (8, 6); `WorldScale` 2..50 (10); `Haptics` 0..1 (0.6);
+`RefreshRate` 60..144 (90). Chase/cockpit toggles also save `CameraMode`. The VR tab of the menu (below)
+edits all of these except `Stereo`, `WideCull`, `NoseForward` and `NoseUp`.
 
 ### Verified unattended (eye dumps at 0°, 90° and 180° head yaw)
 - Correct stereo: near objects shift the right way between eyes; the asymmetric eye frustums offset
@@ -373,6 +389,13 @@ else does system work: stick clicks and chords stay game actions.
 Index has no View button, so left A stands in for it; Touch uses left Y. Haptics are two vibration
 output actions (left and right) bound to `/output/haptic` on the Frame, Index and Touch profiles.
 
+Haptics go through one sfvr queue, coalesced (strongest amplitude, longest duration per hand) and flushed
+once per XR frame, scaled by `gEnhancements.VR.Haptics` (default 0.6, so the 0.6 system buzz plays at
+0.36). N64 rumble is routed there: the game's rumble state machine (replicated in `port/input_bridge.c`)
+switches the motor on and off on its own duty cycle; the commanded level is recorded per port
+(`gGdxVrMotorOn`), and while it is on a 40 ms full-amplitude pulse is submitted to both hands every host
+iteration, so the game's pattern becomes the haptic pattern. The pak has no intensity or handedness to map.
+
 Recentre details:
 - A recentre applies at an XR frame boundary (`xrWaitFrame`). It captures the head's yaw about LOCAL
   +y and its horizontal position; eye poses and the flat quad are expressed relative to them. The
@@ -390,5 +413,36 @@ Recentre details:
 - Log lines: `[vr] recentre requested (<why>, <what>)` and `[openxr] recentred: ... height anchor
   <y> (updated|kept)`.
 
-Not verified on a headset: the View binding on the Frame profile, that the Frame profile accepts
-`/output/haptic`, the hold feel, and the buzz.
+### Display refresh rate
+When the runtime advertises `XR_FB_display_refresh_rate` the extension is enabled, the offered rates are
+enumerated and logged, and the highest offered rate at or below `gEnhancements.VR.RefreshRate` (default 90)
+is requested as the session starts running (and again whenever the CVar changes). **Automatic fallback to
+72 Hz:** while focused, if the XR frame rate stays under 90% of a target above 72 Hz for two consecutive
+10 s windows, 72 Hz is requested instead; windows restart on any focus change, and the fallback lasts for
+the session without touching the CVar. The simulation does not depend on the rate: the scheduler places
+frames by `predictedDisplayTime`, and its tests cover steady 72, 90, 120, 144 and 45 Hz and mid-stream
+switches between 90 and 72. Not yet verified on a device: that the Frame offers or honours these rates.
+
+### In-headset menu
+Hold **Menu + View together for 0.5 s** to open or close the G-Diffuser menu on its **VR** tab (the same
+chord closes it; View short press is Back). The decomp's pause menu has no item list to extend (fixed
+sprite and string layout inside matching code), so the chord is used, as the standard prescribes for games
+whose pause cannot be extended.
+- It is the existing full-screen menu with gamepad navigation, shown on the flat quad. While it is visible
+  the host presents flat (no stereo race behind it), the controllers drive the menu instead of the game,
+  and a race in progress is paused with one synthetic START on open and resumed with another on close (only
+  if that START paused it). START is also withheld from the game while View is held, after the chord and
+  while the menu is open, so press View first.
+- Navigation: D-pad (the left stick also acts as a D-pad, for the Index and Touch profiles), A confirm, B
+  cancel, bumpers switch tabs, View short press closes. The menu is fed through
+  `gdx_imgui_nav_set_external()` because the session reads the controllers through OpenXR actions, not an
+  SDL gamepad. There is no pointer ray yet.
+- VR tab (only on `--vr` launches): horizon lock, level chase pitch, cockpit view; world scale, HUD height,
+  HUD aspect (applies on restart); haptics strength, refresh rate; how to recentre and "Reset VR settings
+  to defaults"; **Quit to Steam** with a Quit / Cancel confirm. Quit calls `xrRequestExitSession` and the
+  host loop leaves when the runtime reaches EXITING (after 3 s regardless).
+- Not done yet: comfort turn settings, dominant-hand, HUD mode/distance, per-tab Defaults, gaze/pointer.
+  Not verified: nothing here has been drawn or navigated in a headset or even run with a ROM.
+
+Not verified on a headset (system layer and haptics): the View binding on the Frame profile, that the
+Frame profile accepts `/output/haptic`, the hold feel, the buzz, and how the rumble pattern feels.
