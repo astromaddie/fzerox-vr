@@ -618,7 +618,7 @@ if(GDX_OPENXR)
     unset(BUILD_WITH_WAYLAND_HEADERS)
     unset(CMAKE_POLICY_DEFAULT_CMP0077)
 
-    target_sources(G-Diffuser PRIVATE vr/gdx_openxr.cpp vr/gdx_vr_scheduler.cpp vr/gdx_vr_math.cpp)
+    target_sources(G-Diffuser PRIVATE vr/gdx_openxr.cpp vr/gdx_vr_scheduler.cpp vr/gdx_vr_math.cpp vr/gdx_vr_system.cpp)
     target_compile_definitions(G-Diffuser PRIVATE GDX_OPENXR=1)
     target_link_libraries(G-Diffuser PRIVATE OpenXR::openxr_loader OpenXR::headers)
     message(STATUS "G-Diffuser: GDX_OPENXR=ON — OpenXR output mode compiled in (OpenXR-SDK 1.1.63, static loader)")
@@ -646,6 +646,18 @@ if(MSVC)
     target_compile_options(gdx_vr_math_tests PRIVATE /W3)
 elseif(GDX_PORT_WARN_FLAGS)
     target_compile_options(gdx_vr_math_tests PRIVATE ${GDX_PORT_WARN_FLAGS})
+endif()
+
+# VR system layer test: View-button hold timing, recentre-request merging and the VR settings
+# table's clamping. Pure policy, no OpenXR, no window, no game data.
+add_executable(gdx_vr_system_tests
+    tests/gdx_vr_system_tests.cpp
+    vr/gdx_vr_system.cpp)
+target_compile_features(gdx_vr_system_tests PRIVATE cxx_std_17)
+if(MSVC)
+    target_compile_options(gdx_vr_system_tests PRIVATE /W3)
+elseif(GDX_PORT_WARN_FLAGS)
+    target_compile_options(gdx_vr_system_tests PRIVATE ${GDX_PORT_WARN_FLAGS})
 endif()
 
 # DSP unit-test harness: compiles n64_audio_hle.c UNMODIFIED and drives it black-box through

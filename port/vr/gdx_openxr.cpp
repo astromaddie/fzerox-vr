@@ -32,6 +32,7 @@
 
 #include "../gdx_input_script.h" // GdxInputPad
 #include "../port_log.h"
+#include "gdx_vr_system.h"
 
 #include <initializer_list>
 #include <utility>
@@ -160,7 +161,13 @@ struct XrInput {
     XrAction r = XR_NULL_HANDLE;      // right trigger
     XrAction l = XR_NULL_HANDLE;      // left grip
     XrAction start = XR_NULL_HANDLE;
-    XrAction recenter = XR_NULL_HANDLE; // left thumbstick click
+    // System layer (docs/VR_ARCHITECTURE.md): the left View button. Short press = N64 B outside
+    // races, hold 1 s = recentre, hold 3 s = recentre + height. Stick clicks stay unbound.
+    XrAction sysView = XR_NULL_HANDLE;
+    gdx_vr::ViewButton viewBtn;
+    double viewBPulseUntil = 0.0; // seconds; N64 B is held until then after a short press
+    XrAction hapticLeft = XR_NULL_HANDLE;  // vibration output, left hand
+    XrAction hapticRight = XR_NULL_HANDLE; // vibration output, right hand
     XrAction view = XR_NULL_HANDLE; // C-right: F-Zero X cycles the race camera view on it
     XrAction cameraMode = XR_NULL_HANDLE; // toggles chase / cockpit
     bool cameraModeHeld = false;
@@ -168,7 +175,6 @@ struct XrInput {
     XrAction dDown = XR_NULL_HANDLE;
     XrAction dLeft = XR_NULL_HANDLE;
     XrAction dRight = XR_NULL_HANDLE;
-    bool recenterHeld = false;
     GdxInputPad pad{};
     bool any = false;                 // pad holds input from this tick's sync
 };
@@ -211,10 +217,15 @@ struct State {
     // App-level recentre: the head's yaw and position captured on request; rendered eye poses and
     // the flat quad are expressed relative to it, so "forward" is wherever the viewer faced then.
     // The poses submitted to the compositor stay in raw LOCAL space.
-    bool recenterPending = true;
+    //
+    // Level recentres (View hold 1 s, camera toggle, flat/stereo switch) take yaw and horizontal
+    // position and keep `heightAnchor`; Height recentres (View hold 3 s, focus gain, a runtime
+    // reference-space change, and the very first one) replace it with the head's current height.
+    gdx_vr::RecentreKind recenterPending = gdx_vr::RecentreKind::Height;
     bool recenterValid = false;
     Quat recenterYaw{ 0.0f, 0.0f, 0.0f, 1.0f };
-    Vec3 recenterPos{ 0.0f, 0.0f, 0.0f };
+    Vec3 recenterPos{ 0.0f, 0.0f, 0.0f }; // head position at the last recentre of either kind
+    float heightAnchor = 0.0f;            // LOCAL y that counts as "game camera height"
 
     // Stereo only while Race_Draw is really drawing (see gGdxVrRaceDrawCount).
     unsigned int raceDrawCountSeen = 0;
@@ -245,6 +256,15 @@ State& S() {
 double NowMs() {
     using namespace std::chrono;
     return duration<double, std::milli>(steady_clock::now().time_since_epoch()).count();
+}
+
+// Ask for a recentre at the next stereo frame boundary (UpdateRecenter, from xrWaitFrame). Requests
+// that land before then merge into the stronger one.
+void RequestRecentre(gdx_vr::RecentreKind kind, const char* why) {
+    State& s = S();
+    s.recenterPending = gdx_vr::MergeRecentre(s.recenterPending, kind);
+    gdx_port_logf("[vr] recentre requested (%s, %s)\n", why,
+                  kind == gdx_vr::RecentreKind::Height ? "yaw+position+height" : "yaw+position");
 }
 
 // Diagnostics for unattended runs (no headset on): GDX_VR_FORCE_RENDER=1 renders eyes even when
@@ -506,7 +526,9 @@ bool CreateInput() {
         !CreateAction(XR_ACTION_TYPE_BOOLEAN_INPUT, "button_r", "R (lean right)", &in.r) ||
         !CreateAction(XR_ACTION_TYPE_BOOLEAN_INPUT, "button_l", "L", &in.l) ||
         !CreateAction(XR_ACTION_TYPE_BOOLEAN_INPUT, "button_start", "Start", &in.start) ||
-        !CreateAction(XR_ACTION_TYPE_BOOLEAN_INPUT, "recenter", "Recenter view", &in.recenter) ||
+        !CreateAction(XR_ACTION_TYPE_BOOLEAN_INPUT, "system_view", "System: Back / hold to recentre", &in.sysView) ||
+        !CreateAction(XR_ACTION_TYPE_VIBRATION_OUTPUT, "haptic_left", "Haptics (left)", &in.hapticLeft) ||
+        !CreateAction(XR_ACTION_TYPE_VIBRATION_OUTPUT, "haptic_right", "Haptics (right)", &in.hapticRight) ||
         !CreateAction(XR_ACTION_TYPE_BOOLEAN_INPUT, "change_view", "Change view (C-right)", &in.view) ||
         !CreateAction(XR_ACTION_TYPE_BOOLEAN_INPUT, "camera_mode", "Chase / cockpit view", &in.cameraMode) ||
         !CreateAction(XR_ACTION_TYPE_BOOLEAN_INPUT, "dpad_up", "D-pad up", &in.dUp) ||
@@ -532,7 +554,9 @@ bool CreateInput() {
                           { in.l, "/user/hand/left/input/bumper/click" },
                           { in.r, "/user/hand/right/input/bumper/click" },
                           { in.start, "/user/hand/right/input/menu/click" },
-                          { in.recenter, "/user/hand/left/input/thumbstick/click" },
+                          { in.sysView, "/user/hand/left/input/view/click" },
+                          { in.hapticLeft, "/user/hand/left/output/haptic" },
+                          { in.hapticRight, "/user/hand/right/output/haptic" },
                           { in.dUp, "/user/hand/left/input/dpad_up/click" },
                           { in.dDown, "/user/hand/left/input/dpad_down/click" },
                           { in.dLeft, "/user/hand/left/input/dpad_left/click" },
@@ -547,7 +571,10 @@ bool CreateInput() {
                       { in.r, "/user/hand/right/input/trigger/click" },
                       { in.l, "/user/hand/left/input/squeeze/value" },
                       { in.start, "/user/hand/left/input/b/click" },
-                      { in.recenter, "/user/hand/left/input/thumbstick/click" } });
+                      // Index has no View button: the free left A button stands in for it.
+                      { in.sysView, "/user/hand/left/input/a/click" },
+                      { in.hapticLeft, "/user/hand/left/output/haptic" },
+                      { in.hapticRight, "/user/hand/right/output/haptic" } });
     SuggestBindings("/interaction_profiles/oculus/touch_controller",
                     { { in.stick, "/user/hand/left/input/thumbstick" },
                       { in.cstick, "/user/hand/right/input/thumbstick" },
@@ -557,7 +584,10 @@ bool CreateInput() {
                       { in.r, "/user/hand/right/input/trigger/value" },
                       { in.l, "/user/hand/left/input/squeeze/value" },
                       { in.start, "/user/hand/left/input/menu/click" },
-                      { in.recenter, "/user/hand/left/input/thumbstick/click" } });
+                      // Touch has no View button: the free left Y button stands in for it.
+                      { in.sysView, "/user/hand/left/input/y/click" },
+                      { in.hapticLeft, "/user/hand/left/output/haptic" },
+                      { in.hapticRight, "/user/hand/right/output/haptic" } });
     XrSessionActionSetsAttachInfo attach{ XR_TYPE_SESSION_ACTION_SETS_ATTACH_INFO };
     attach.countActionSets = 1;
     attach.actionSets = &s.input.set;
@@ -569,11 +599,30 @@ bool CreateInput() {
     return true;
 }
 
+// Buzz both hands. Only valid after a successful xrSyncActions this tick (the haptic actions must
+// be in an active action set), and while focused.
+void BuzzBothHands(const gdx_vr::Haptic& h) {
+    State& s = S();
+    for (XrAction action : { s.input.hapticLeft, s.input.hapticRight }) {
+        XrHapticActionInfo hai{ XR_TYPE_HAPTIC_ACTION_INFO };
+        hai.action = action;
+        XrHapticVibration vib{ XR_TYPE_HAPTIC_VIBRATION };
+        vib.amplitude = h.amplitude;
+        vib.duration = (XrDuration)h.durationMs * 1000000;
+        vib.frequency = XR_FREQUENCY_UNSPECIFIED;
+        const XrResult r = xrApplyHapticFeedback(s.session, &hai, reinterpret_cast<const XrHapticBaseHeader*>(&vib));
+        if (XR_FAILED(r)) {
+            gdx_port_logf("[vr] haptic failed (%d)\n", (int)r);
+        }
+    }
+}
+
 void SyncInput() {
     State& s = S();
     XrInput& in = s.input;
     in.any = false;
     if (!in.ready || !s.focused) {
+        in.viewBtn.Reset(); // a press in progress when focus is lost must not fire later
         return;
     }
     XrActiveActionSet active{ in.set, XR_NULL_PATH };
@@ -612,16 +661,29 @@ void SyncInput() {
     if (boolean(in.dDown)) buttons |= 0x0400; // D-pad down
     if (boolean(in.dLeft)) buttons |= 0x0200; // D-pad left
     if (boolean(in.dRight)) buttons |= 0x0100; // D-pad right
-    const bool recenterNow = boolean(in.recenter);
-    if (recenterNow && !in.recenterHeld) {
-        s.recenterPending = true;
-        gdx_port_logf("[openxr] recenter requested (left thumbstick click)\n");
+    // System layer: left View. B is only sent for a short press outside races, so it is Back in the
+    // flat menus and never doubles as boost in a race (any race on screen, stereo or not).
+    const double nowSec = NowMs() * 0.001;
+    const gdx_vr::ViewEvents ve = in.viewBtn.Update(boolean(in.sysView), nowSec);
+    if (ve.recentre) {
+        RequestRecentre(gdx_vr::RecentreKind::Level, "View hold 1 s");
+        BuzzBothHands(gdx_vr::kSystemBuzz);
     }
-    in.recenterHeld = recenterNow;
+    if (ve.recentreHeight) {
+        RequestRecentre(gdx_vr::RecentreKind::Height, "View hold 3 s");
+        BuzzBothHands(gdx_vr::kSystemBuzz);
+    }
+    if (ve.shortPress && !s.lastTickStereo && !s.raceDrawnLastTick) {
+        // The game polls pads once per tick and a tap can end between ticks: hold B for 100 ms.
+        in.viewBPulseUntil = nowSec + 0.1;
+    }
+    if (nowSec < in.viewBPulseUntil) {
+        buttons |= 0x4000; // B
+    }
     const bool cameraModeNow = boolean(in.cameraMode);
     if (cameraModeNow && !in.cameraModeHeld) {
         s.cockpit = !s.cockpit;
-        s.recenterPending = true;
+        RequestRecentre(gdx_vr::RecentreKind::Level, "camera toggle");
         gdx_interp_mark_cut_src("vr-camera-mode");
         gdx_port_logf("[openxr] camera -> %s\n", s.cockpit ? "cockpit" : "chase");
     }
@@ -872,7 +934,9 @@ void HandleSessionState(XrSessionState st) {
     State& s = S();
     gdx_port_logf("[openxr] session state %s\n", SessionStateName(st));
     if (st == XR_SESSION_STATE_FOCUSED && !s.focused) {
-        s.recenterPending = true; // facing direction when the app gains focus becomes forward
+        // Facing direction and height when the app gains focus become forward and camera height
+        // (possibly a different wearer after the headset came off).
+        RequestRecentre(gdx_vr::RecentreKind::Height, "focus gain");
     }
     s.focused = (st == XR_SESSION_STATE_FOCUSED);
     switch (st) {
@@ -916,6 +980,10 @@ void PollEvents() {
             gdx_port_logf("[openxr] instance loss pending\n");
             s.phase = Phase::Exiting;
             s.exitRequested = true;
+        } else if (ev.type == XR_TYPE_EVENT_DATA_REFERENCE_SPACE_CHANGE_PENDING) {
+            // A system recentre (the runtime moves the LOCAL origin): treat it like our own, with
+            // height, since the origin's height may have moved too.
+            RequestRecentre(gdx_vr::RecentreKind::Height, "runtime reference-space change");
         }
         ev = XrEventDataBuffer{ XR_TYPE_EVENT_DATA_BUFFER };
     }
@@ -933,9 +1001,10 @@ Quat QConj(const Quat& q) {
 }
 
 // Capture the head's yaw (about LOCAL +y; LOCAL is gravity-aligned) and position as the new forward.
+// A Level request keeps the height anchor; a Height request (and the first recentre) replaces it.
 void UpdateRecenter(XrTime time) {
     State& s = S();
-    if (!s.recenterPending || s.viewSpace == XR_NULL_HANDLE) {
+    if (s.recenterPending == gdx_vr::RecentreKind::Idle || s.viewSpace == XR_NULL_HANDLE) {
         return;
     }
     XrSpaceLocation loc{ XR_TYPE_SPACE_LOCATION };
@@ -953,10 +1022,15 @@ void UpdateRecenter(XrTime time) {
     const float theta = std::atan2(-f.x, -f.z);
     s.recenterYaw = { 0.0f, std::sin(theta * 0.5f), 0.0f, std::cos(theta * 0.5f) };
     s.recenterPos = { loc.pose.position.x, loc.pose.position.y, loc.pose.position.z };
+    const bool withHeight = !s.recenterValid || s.recenterPending == gdx_vr::RecentreKind::Height;
+    if (withHeight) {
+        s.heightAnchor = loc.pose.position.y;
+    }
     s.recenterValid = true;
-    s.recenterPending = false;
-    gdx_port_logf("[openxr] recentred: yaw %.1f deg, head (%.2f, %.2f, %.2f)\n", theta * 57.29578f,
-                  s.recenterPos.x, s.recenterPos.y, s.recenterPos.z);
+    s.recenterPending = gdx_vr::RecentreKind::Idle;
+    gdx_port_logf("[openxr] recentred: yaw %.1f deg, head (%.2f, %.2f, %.2f), height anchor %.2f%s\n",
+                  theta * 57.29578f, s.recenterPos.x, s.recenterPos.y, s.recenterPos.z, s.heightAnchor,
+                  withHeight ? " (updated)" : " (kept)");
 }
 
 // A LOCAL-space pose expressed relative to the recentre frame.
@@ -968,7 +1042,8 @@ Pose Recentred(const XrPosef& p) {
         return { q, pos };
     }
     const Quat inv = QConj(s.recenterYaw);
-    pos = Rotate(inv, { pos.x - s.recenterPos.x, pos.y - s.recenterPos.y, pos.z - s.recenterPos.z });
+    // Horizontal offset from the recentre point, vertical offset from the kept height anchor.
+    pos = Rotate(inv, { pos.x - s.recenterPos.x, pos.y - s.heightAnchor, pos.z - s.recenterPos.z });
     return { QMul(inv, q), pos };
 }
 
@@ -1514,7 +1589,8 @@ bool BeginHostIteration() {
         gdx_port_logf("[openxr] presentation -> %s (mode=0x%02X players=%d)\n", s.stereoThisTick ? "stereo" : "flat",
                       gGameMode & 0x1F, gNumPlayers);
         s.lastTickStereo = s.stereoThisTick;
-        s.recenterPending = true; // each race starts (and each menu returns) facing forward
+        // Each race starts (and each menu returns) facing forward.
+        RequestRecentre(gdx_vr::RecentreKind::Level, "flat/stereo switch");
         gdx_interp_mark_cut_src("vr-presentation-switch");
     }
     if (s.stereoThisTick) {
