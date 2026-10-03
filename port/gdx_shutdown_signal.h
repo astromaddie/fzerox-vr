@@ -13,8 +13,10 @@
 //
 // After gdx_shutdown_signal_install(), the first SIGTERM or SIGINT only records the signal; the
 // main loop sees it, closes the window and leaves through the normal teardown (VR session, audio
-// thread join) before main() returns. A second one restores the default action and re-raises it,
-// so a wedged process can still be killed; that path runs no destructors at all.
+// thread join) before main() returns. A second one at least 2 s later restores the default action
+// and re-raises it, so a wedged process can still be killed; that path runs no destructors at all.
+// Repeats inside those 2 s are absorbed: supervisors such as timeout(1) signal both the process and
+// its group, so one request often arrives twice.
 //
 // No-op on Windows, where nothing turns these signals into exit().
 

@@ -349,13 +349,18 @@ edits all of these except `Stereo` and `WideCull`.
   build hung like this, 8 of 8, whether it saved or not; gdb shows `exit()` freeing the buffer while
   the audio thread is mid-tick. Now `port/gdx_shutdown_signal.c` turns the first SIGTERM or SIGINT
   into a window close, so the normal teardown (VR session, audio thread join) runs before `main()`
-  returns; 8 of 8 runs of the fixed build exit 0. A second signal still kills the process outright.
+  returns; 8 of 8 runs of the fixed build exit 0. A second signal at least 2 s after the first still
+  kills the process outright; repeats inside that window are absorbed, because timeout(1) and other
+  supervisors signal both the process and its group, so one stop request often arrives as two
+  SIGTERMs (on the Frame this killed 1 of 4 runs of the first version of the fix outright).
   SIGQUIT still goes through libultraship. `gdx_vr_settings_tests` covers the first-launch settings
   path and this exit (set `GDX_VR_SETTINGS_TESTS_OLD_SIGTERM=1` to see the old behaviour under
   ASan). The early Frame pattern (only the two saving runs failed) was chance: a later
   Frame run with a config that needed no save (2026-10-03, skybox diagnosis) also hung after
-  SIGTERM and had to be killed. The fixed build is not yet re-run on the Frame, so the VR-session
-  teardown on this close path has not run with a live OpenXR session.
+  SIGTERM and had to be killed. Verified on the Frame (2026-10-03, cockpit, live OpenXR session, SIGTERM at
+  45-60 s): the old build exited 1 or hung until SIGKILL; the fixed build exited 0 in 6 of 6 runs
+  (3 with a startup save, 3 without) within a second, logging the window close, `[openxr] shut down`
+  and the audio thread stopping, in that order, with no heap errors.
 - Not yet seen through the headset: world scale, comfort (the chase camera's roll in pipes and loops
   is applied to the viewer's reference frame), HUD size/distance, brightness.
 - Screen-space sprites the game draws in the world part of the list are now handled per kind

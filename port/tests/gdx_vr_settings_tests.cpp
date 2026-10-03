@@ -24,6 +24,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <ctime>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
@@ -239,8 +240,24 @@ static void CaseSigtermAfterStartupSave() {
     check("child survives the signal and exits cleanly", WIFEXITED(status) && WEXITSTATUS(status) == 0);
 }
 
+// timeout(1) and other supervisors signal the process and its group: one request, two SIGTERMs.
+static void CaseDuplicateSignalAbsorbed() {
+    std::printf("  a SIGTERM delivered twice at once is still one orderly request\n");
+    std::fflush(stdout);
+    const pid_t pid = fork();
+    if (pid == 0) {
+        gdx_shutdown_signal_install();
+        raise(SIGTERM);
+        raise(SIGTERM);
+        _exit(gdx_shutdown_signal_requested() == SIGTERM ? 0 : 6);
+    }
+    int status = 0;
+    waitpid(pid, &status, 0);
+    check("child survives a duplicate and exits cleanly", WIFEXITED(status) && WEXITSTATUS(status) == 0);
+}
+
 static void CaseSecondSignalKills() {
-    std::printf("  a second SIGTERM still kills, without running exit handlers\n");
+    std::printf("  a second SIGTERM 2 s later still kills, without running exit handlers\n");
     int fds[2];
     if (pipe(fds) != 0) {
         check("pipe", false);
@@ -254,6 +271,8 @@ static void CaseSecondSignalKills() {
         std::atexit([] { (void)!write(sWriteFd, "x", 1); });
         gdx_shutdown_signal_install();
         raise(SIGTERM);
+        const struct timespec wait = { 2, 200000000 }; // past the 2 s duplicate window
+        nanosleep(&wait, nullptr);
         raise(SIGTERM);
         _exit(5); // not reached
     }
@@ -293,6 +312,7 @@ int main() {
     CaseWrongTypes();
 #ifndef _WIN32
     CaseSigtermAfterStartupSave();
+    CaseDuplicateSignalAbsorbed();
     CaseSecondSignalKills();
 #endif
 
