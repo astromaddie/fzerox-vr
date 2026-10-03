@@ -67,8 +67,8 @@ enum SettingId {
     kSetLevelPitch,
     kSetHudAspect,
     kSetHudHeight,
-    kSetNoseForward,
-    kSetNoseUp,
+    kSetRoofForward, // cockpit eye, world units along the machine's forward from its origin
+    kSetRoofClearance, // cockpit eye, world units above the machine's roof (CockpitRoofHeight)
     kSetWorldScale,
     kSetHaptics, // scale for every haptic pulse (standard.md section 6), 0 = off
     kSetRefreshRate, // Hz ceiling for the display refresh-rate request (XR_FB_display_refresh_rate)
@@ -112,6 +112,14 @@ bool StickAsDpad(bool wasOn, float positive);
 // The highest of `rates` (Hz, as enumerated by the runtime) that is <= hz, allowing 0.5 Hz of slack
 // for values such as 89.99; 0 when none qualifies or the list is empty.
 float PickRefreshRate(const float* rates, unsigned count, float hz);
+
+// Cockpit view: the height (world units above the machine's underside) of the roof the eye must see
+// over, for an eye `forward` world units ahead of the machine's origin. `machine` is the stock model
+// index (sMachineDrawFuncs order: 0..29 pilots, 30.. super machines); -1, or any model this table
+// does not describe (edited custom machines, model packs), gets kCockpitFallbackRoof. Heights come
+// from the stock LOD1 meshes (gdx_vr_roof_table.h) and are interpolated between table rows.
+constexpr float kCockpitFallbackRoof = 15.0f;
+float CockpitRoofHeight(int machine, float forward);
 
 // Clamp `value` into the setting's range. NaN and infinities fall back to the default; integer
 // settings are rounded to the nearest integer first.

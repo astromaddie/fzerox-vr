@@ -68,13 +68,15 @@ void PresentStereoTick(const StereoCallbacks& callbacks);
 bool BuildActiveEyeProjView(const float eye[3], const float at[3], const float up[3], float nearZ, float farZ,
                             float out[4][4], bool levelPitch);
 
-// Cockpit view: the viewer rides just above the machine's windshield instead of the chase camera.
+// Cockpit view: the viewer rides on the machine's roof instead of the chase camera.
 // Toggled with the Steam Frame controller's right B button; starts from gEnhancements.VR.CameraMode
 // (0 chase, 1 cockpit).
 bool CockpitMode();
 // Where the cockpit eye sits relative to the machine's origin, in world units along its forward and
-// up axes (gEnhancements.VR.NoseForward / NoseUp).
-void CockpitOffsets(float* forward, float* up);
+// up axes: gEnhancements.VR.RoofForward ahead, then that model's roof height there
+// (gdx_vr::CockpitRoofHeight; `machine` as returned by gdx_vr_read_player_vehicle) plus
+// gEnhancements.VR.RoofClearance.
+void CockpitOffsets(int machine, float* forward, float* up);
 
 // World-space frame of the active eye as last built by BuildActiveEyeProjView (position, forward,
 // up), with the tangents of its widest horizontal and vertical half-angles. For per-eye rebuilds

@@ -243,8 +243,10 @@ static void CaseSettings() {
     check("refresh rate clamps to 60..144 and rounds", SanitizeSetting(kSetRefreshRate, 10.0) == 60.0 &&
                                                           SanitizeSetting(kSetRefreshRate, 500.0) == 144.0 &&
                                                           SanitizeSetting(kSetRefreshRate, 89.6) == 90.0);
-    check("in-range value is untouched", SanitizeSetting(kSetNoseForward, 12.5) == 12.5);
-    check("negative nose offsets are allowed", SanitizeSetting(kSetNoseUp, -5.0) == -5.0);
+    check("in-range value is untouched", SanitizeSetting(kSetRoofForward, -2.5) == -2.5);
+    check("roof forward clamps to the measured span", SanitizeSetting(kSetRoofForward, 40.0) == 12.0 &&
+                                                        SanitizeSetting(kSetRoofForward, -40.0) == -12.0);
+    check("roof clearance cannot go below the roof", SanitizeSetting(kSetRoofClearance, -5.0) == 0.0);
     check("all CVar names are in the gEnhancements.VR namespace", [] {
         for (int i = 0; i < kSettingCount; i++) {
             const char* n = Setting(static_cast<SettingId>(i)).cvar;
@@ -252,6 +254,22 @@ static void CaseSettings() {
         }
         return true;
     }());
+}
+
+static void CaseRoofHeight() {
+    using gdx_vr::CockpitRoofHeight;
+    using gdx_vr::kCockpitFallbackRoof;
+    // Rows from gdx_vr_roof_table.h: Blue Falcon (0) is flat at 11.7; Twin Noritta (9) falls
+    // 5.0 -> 4.8 between forward 0 and 2; Black Bull (15) is the tallest at the origin.
+    check("table row read at a sample", std::fabs(CockpitRoofHeight(0, 0.0f) - 11.7f) < 1e-4f);
+    check("interpolates between samples", std::fabs(CockpitRoofHeight(9, 1.0f) - 4.9f) < 1e-4f);
+    check("clamps before the first sample", CockpitRoofHeight(9, -99.0f) == CockpitRoofHeight(9, -12.0f));
+    check("clamps after the last sample", CockpitRoofHeight(9, 99.0f) == CockpitRoofHeight(9, 12.0f));
+    check("machines differ", CockpitRoofHeight(15, 0.0f) > CockpitRoofHeight(9, 0.0f) + 10.0f);
+    check("super machines are covered", CockpitRoofHeight(32, 0.0f) != kCockpitFallbackRoof);
+    check("unknown machine falls back", CockpitRoofHeight(-1, 0.0f) == kCockpitFallbackRoof &&
+                                            CockpitRoofHeight(33, 0.0f) == kCockpitFallbackRoof);
+    check("NaN forward falls back", CockpitRoofHeight(0, std::nanf("")) == kCockpitFallbackRoof);
 }
 
 int main() {
@@ -269,6 +287,7 @@ int main() {
     CaseStickAsDpad();
     CaseRefreshPick();
     CaseSettings();
+    CaseRoofHeight();
     std::printf("%d checks, %d failed\n", gChecks, gFails);
     return gFails == 0 ? 0 : 1;
 }

@@ -1,4 +1,5 @@
 #include "gdx_vr_system.h"
+#include "gdx_vr_roof_table.h"
 
 #include <cmath>
 
@@ -29,8 +30,8 @@ const SettingInfo kSettings[kSettingCount] = {
     { "gEnhancements.VR.LevelPitch", true, 1.0, 0.0, 1.0 },
     { "gEnhancements.VR.HudAspect", false, 1.5, 4.0 / 3.0, 4.0 }, // swapchain width / height
     { "gEnhancements.VR.HudHeight", false, 1.2, 0.3, 3.0 },       // metres
-    { "gEnhancements.VR.NoseForward", false, 8.0, -40.0, 40.0 },  // cockpit eye offset, world units
-    { "gEnhancements.VR.NoseUp", false, 6.0, -40.0, 40.0 },
+    { "gEnhancements.VR.RoofForward", false, 0.0, -12.0, 12.0 },  // cockpit eye, world units
+    { "gEnhancements.VR.RoofClearance", false, 3.0, 0.0, 20.0 },
     { "gEnhancements.VR.WorldScale", false, 10.0, 2.0, 50.0 },    // world units per metre
     { "gEnhancements.VR.Haptics", false, 0.6, 0.0, 1.0 },         // pulse strength scale
     { "gEnhancements.VR.RefreshRate", true, 90.0, 60.0, 144.0 },  // Hz ceiling, highest offered <= it
@@ -85,6 +86,23 @@ void Chord::Reset() {
 
 bool StickAsDpad(bool wasOn, float positive) {
     return wasOn ? positive > 0.35f : positive > 0.55f;
+}
+
+float CockpitRoofHeight(int machine, float forward) {
+    if (machine < 0 || machine >= kRoofMachineCount || !std::isfinite(forward)) {
+        return kCockpitFallbackRoof;
+    }
+    const float* h = kRoofHeight[machine];
+    if (forward <= kRoofForward[0]) {
+        return h[0];
+    }
+    for (int i = 1; i < kRoofForwardCount; i++) {
+        if (forward <= kRoofForward[i]) {
+            const float t = (forward - kRoofForward[i - 1]) / (kRoofForward[i] - kRoofForward[i - 1]);
+            return h[i - 1] + (h[i] - h[i - 1]) * t;
+        }
+    }
+    return h[kRoofForwardCount - 1];
 }
 
 float PickRefreshRate(const float* rates, unsigned count, float hz) {

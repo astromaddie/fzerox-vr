@@ -7,6 +7,7 @@
 #include "fzx_camera.h"
 #include "fzx_course.h"
 #include "fzx_game.h"
+#include "fzx_machine.h" /* CUSTOM_MACHINE_*, for the cockpit view's model lookup */
 #include "fzx_racer.h" /* gRacers + the ATTACK_STATE_* enum, for the side-attack predicate below */
 #include "n64_rdram.h"
 /* Last, like n64_rdram.h: it declares size_t parameters and deliberately includes no platform
@@ -1774,9 +1775,15 @@ void gdx_vr_camera_track_up(float out[3]) {
    model matrix is built from) and its travel orientation (trueBasis: x forward, y up). The travel
    basis, not the model basis, so the view does not spin through spin attacks or roll with the
    body's lean animation. Read once per tick by the gfx bridge, which interpolates it like the
-   camera. */
-void gdx_vr_read_player_vehicle(float pos[3], float forward[3], float up[3]) {
+   camera. Returns the stock model the racer draws (sMachineDrawFuncs index, as func_8008D3C4 picks
+   it: the pilot's own machine, or 30.. for a super machine), so the eye can sit on that model's
+   roof; -1 when the model is not a stock one (an edited custom machine, or model packs enabled). */
+extern Machine gMachines[];
+extern int gdx_model_packs_enabled(void);
+
+int gdx_vr_read_player_vehicle(float pos[3], float forward[3], float up[3]) {
     const Racer* racer = &gRacers[gCameras[0].id];
+    s32 customType;
 
     pos[0] = racer->modelPos.x;
     pos[1] = racer->modelPos.y;
@@ -1787,4 +1794,16 @@ void gdx_vr_read_player_vehicle(float pos[3], float forward[3], float up[3]) {
     up[0] = racer->trueBasis.y.x;
     up[1] = racer->trueBasis.y.y;
     up[2] = racer->trueBasis.y.z;
+
+    if (racer->character < 0 || racer->character >= 30 || gdx_model_packs_enabled()) {
+        return -1;
+    }
+    customType = gMachines[racer->character].customType;
+    if (customType == CUSTOM_MACHINE_DEFAULT) {
+        return racer->character;
+    }
+    if (customType >= CUSTOM_MACHINE_SUPER_FALCON) {
+        return customType - CUSTOM_MACHINE_SUPER_FALCON + 30;
+    }
+    return -1;
 }

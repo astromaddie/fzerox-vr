@@ -2948,13 +2948,15 @@ extern "C" void gdx_vr_background_vtx_restore(void);
 extern "C" void gdx_vr_background_vtx_build_eye(const float eyePos[3], const float forward[3], const float up[3],
                                                 float tanHalfX, float tanHalfY);
 // port/decomp_port.c: the followed racer's rendered position and travel basis, for the cockpit view.
-extern "C" void gdx_vr_read_player_vehicle(float pos[3], float forward[3], float up[3]);
+// Returns its stock model index (gdx_vr::CockpitRoofHeight), or -1.
+extern "C" int gdx_vr_read_player_vehicle(float pos[3], float forward[3], float up[3]);
 // Player vehicle pose for this tick and the previous one (pos, forward, up), rolled with the camera
 // poses so the cockpit anchor interpolates at the same t as the rendered machine.
 static float gGdxVrVehCur[9];
 static float gGdxVrVehPrev[9];
 static bool gGdxVrVehCurOk = false;
 static bool gGdxVrVehPrevOk = false;
+static int gGdxVrVehMachine = -1; // this tick's model, not interpolated (it changes only between races)
 #endif
 
 static inline bool GdxVrStereoTick() {
@@ -3359,7 +3361,7 @@ class N64DisplayListAdapter {
         if (GdxVrStereoTick()) {
             std::memcpy(gGdxVrVehPrev, gGdxVrVehCur, sizeof(gGdxVrVehCur));
             gGdxVrVehPrevOk = gGdxVrVehCurOk;
-            gdx_vr_read_player_vehicle(&gGdxVrVehCur[0], &gGdxVrVehCur[3], &gGdxVrVehCur[6]);
+            gGdxVrVehMachine = gdx_vr_read_player_vehicle(&gGdxVrVehCur[0], &gGdxVrVehCur[3], &gGdxVrVehCur[6]);
             gGdxVrVehCurOk = true;
         } else {
             gGdxVrVehCurOk = gGdxVrVehPrevOk = false;
@@ -3460,14 +3462,16 @@ class N64DisplayListAdapter {
                     v[i] = gGdxVrVehPrev[i] + (gGdxVrVehCur[i] - gGdxVrVehPrev[i]) * t;
                 }
             }
-            float noseForward = 0.0f, noseUp = 0.0f;
-            gdx_vr::CockpitOffsets(&noseForward, &noseUp);
-            const float eye[3] = { v[0] + v[3] * noseForward + v[6] * noseUp,
-                                   v[1] + v[4] * noseForward + v[7] * noseUp,
-                                   v[2] + v[5] * noseForward + v[8] * noseUp };
+            // The eye rides on this machine's roof: RoofForward along its forward, then the roof
+            // height there (measured per stock model) plus RoofClearance up.
+            float roofForward = 0.0f, roofUp = 0.0f;
+            gdx_vr::CockpitOffsets(gGdxVrVehMachine, &roofForward, &roofUp);
+            const float eye[3] = { v[0] + v[3] * roofForward + v[6] * roofUp,
+                                   v[1] + v[4] * roofForward + v[7] * roofUp,
+                                   v[2] + v[5] * roofForward + v[8] * roofUp };
             const float at[3] = { eye[0] + v[3], eye[1] + v[4], eye[2] + v[5] };
             const float up[3] = { v[6], v[7], v[8] };
-            // The machine's own nose sits a metre or less below the eye: pull the near plane in.
+            // The roof sits a few tenths of a metre below the eye: pull the near plane in.
             const float nearZ = (pose.nearZ > 2.0f) ? 2.0f : pose.nearZ;
             if (!gdx_vr::BuildActiveEyeProjView(eye, at, up, nearZ, pose.farZ, pv, false)) {
                 return false;

@@ -264,7 +264,7 @@ release user, independent of VR, and is worth upstreaming on its own.
 | File | Role |
 | --- | --- |
 | `port/vr/gdx_vr_scheduler.*` | Display-time scheduler: places each XR frame on the 59.94 Hz tick timeline by `predictedDisplayTime`, says how many ticks must run first and at which interpolation t to render. Pure; `gdx_vr_scheduler_tests` (45 checks, incl. 72/90/120/144/45 Hz uniform steps and an hour without drift). |
-| `port/vr/gdx_vr_system.*` | Pure policy, no OpenXR: an adapter over sfvr's View-button state machine, recentre-request merging (Level vs Height), the Menu + View chord, stick-as-D-pad for menu navigation, refresh-rate picking, and the `gEnhancements.VR.*` settings table (names, defaults, clamp ranges). `gdx_vr_system_tests` (58 checks). |
+| `port/vr/gdx_vr_system.*` | Pure policy, no OpenXR: an adapter over sfvr's View-button state machine, recentre-request merging (Level vs Height), the Menu + View chord, stick-as-D-pad for menu navigation, refresh-rate picking, and the `gEnhancements.VR.*` settings table (names, defaults, clamp ranges). `gdx_vr_system_tests` (67 checks, including the cockpit roof lookup). |
 | `port/third_party/sfvr/` | The shared cross-port VR library (C99), vendored by copying from `~/code/sfvr`; `VERSION` holds the pinned commit. Never edited here. Built as `gdx_sfvr`. Used for the View button, the haptic queue and the `[vr-perf]` line. |
 | `port/vr/gdx_vr_math.*` | Per-eye projection·view in the game's conventions; asymmetric XR FOV; s15.16 fit (uniform scale, NDC-invariant). `gdx_vr_math_tests` (34 checks) compares against a transcription of `Matrix_SetLookAt`/`Matrix_SetFrustrum`/`Camera_CalculateProjectionViewMtx`. |
 | `port/vr/gdx_openxr.*` | Instance/session/swapchains (GL, Xlib/GLX binding), session states, the shared frame protocol, flat quad, stereo projection layer, head-locked HUD quad, OpenXR controller actions, diagnostics. |
@@ -320,9 +320,9 @@ from then on. On load, out-of-range or non-finite values are clamped and written
 the wrong CVar type, e.g. `"HudHeight": 2`, is converted); every read clamps again. The log prints a
 `[vr] settings:` line with the effective values. Ranges: `Stereo`, `WideCull`, `CameraMode`,
 `HorizonLock`, `LevelPitch` 0..1; `HudAspect` 4/3..4 (default 1.5); `HudHeight` 0.3..3 m (1.2);
-`NoseForward`, `NoseUp` -40..40 world units (8, 6); `WorldScale` 2..50 (10); `Haptics` 0..1 (0.6);
+`RoofForward` -12..12 world units (0); `RoofClearance` 0..20 world units (3); `WorldScale` 2..50 (10); `Haptics` 0..1 (0.6);
 `RefreshRate` 60..144 (90). Chase/cockpit toggles also save `CameraMode`. The VR tab of the menu (below)
-edits all of these except `Stereo`, `WideCull`, `NoseForward` and `NoseUp`.
+edits all of these except `Stereo`, `WideCull`, `RoofForward` and `RoofClearance`.
 
 ### Verified unattended (eye dumps at 0°, 90° and 180° head yaw)
 - Correct stereo: near objects shift the right way between eyes; the asymmetric eye frustums offset
@@ -333,6 +333,13 @@ edits all of these except `Stereo`, `WideCull`, `NoseForward` and `NoseUp`.
 - Track and machines behind the game camera present (distance culling); no vertex-buffer overflow.
 
 ### Known limitations / next
+- **Open: heap corruption after a startup settings save.** When `InitSettings` finds a VR key missing
+  from the config, it registers defaults and calls `CVarSave()`. In unattended runs on the Frame
+  (2026-10-03, 75 s, SIGTERM at the end), the two runs that saved at startup aborted at exit with
+  glibc `corrupted double-linked list` and hung. The six that did not save exited cleanly. Not yet
+  reproduced on a build without the RoofForward/RoofClearance rename by deleting a key; the rename
+  makes every existing config hit this path once. Suspect the startup `CVarSave` or the teardown
+  that follows it.
 - Not yet seen through the headset: world scale, comfort (the chase camera's roll in pipes and loops
   is applied to the viewer's reference frame), HUD size/distance, brightness.
 - Screen-space sprites the game draws in the world part of the list are now handled per kind
@@ -365,13 +372,23 @@ edits all of these except `Stereo`, `WideCull`, `NoseForward` and `NoseUp`.
   (`Camera.racerBasis.y`; `gEnhancements.VR.LevelPitch`, default 1) while still banking with it.
 - Cockpit view (the plan's "Nose VR"): right B on the Frame controllers toggles chase ↔ cockpit
   (start mode `gEnhancements.VR.CameraMode`, 0 chase / 1 cockpit; `GDX_VR_COCKPIT=1` for tests).
-  The eye is anchored at the followed racer's rendered position (`modelPos`) plus
-  `gEnhancements.VR.NoseForward` (8) world units along its forward and `gEnhancements.VR.NoseUp`
-  (6) along its up, oriented by its travel basis (`trueBasis`, so spin attacks and the body's lean
-  animation do not turn the view). The pose is snapshotted per tick with the camera poses and
+  The eye rides on the machine's roof, so the nose is in view ahead. It is anchored at the followed
+  racer's rendered position (`modelPos`, the model's underside), moved `gEnhancements.VR.RoofForward`
+  (0) world units along its forward, then up by that machine's roof height there plus
+  `gEnhancements.VR.RoofClearance` (3, about 0.3 m at the default world scale). It is oriented by
+  the travel basis (`trueBasis`, so spin attacks and the body's lean animation do not turn the
+  view). Roof heights differ six-fold across the roster (Twin Noritta ~3.5 units at the
+  centreline, Black Bull ~21), so they are per machine: `port/vr/gdx_vr_roof_table.h`, generated by
+  `tools/gen_vr_roof_table.py --o2r <fzerox.o2r>` from the stock LOD1 race meshes (the highest body
+  surface within 4 units of the centreline, from just behind the eye to the nose, so the view
+  clears canopies and fins ahead). `gdx_vr_read_player_vehicle` reports the stock model (super
+  machines included); edited custom machines and model packs use a 15-unit fallback roof. The old
+  `NoseForward`/`NoseUp` (8, 6) put the eye inside nearly every body (most roofs are 10–25 units up), so
+  the machine was never visible. The pose is snapshotted per tick with the camera poses and
   interpolated at the frame's t, so it stays phase-locked to the rendered machine. Near plane is
-  capped at 2 units (0.2 m) so the machine's own nose is not clipped. Offsets are first guesses,
-  not yet calibrated against machine geometry or tried in the headset.
+  capped at 2 units (0.2 m). Verified unattended: a forced-render cockpit eye dump in the attract
+  demo shows the followed machine's dark canopy and its nose just below the horizon in both eyes,
+  with near-field parallax. Not yet worn.
 - No desktop mirror while in stereo, HUD always head-locked.
 - The flat quad is world-locked 2 m ahead of the last recentre, at the height anchor (see below).
 
