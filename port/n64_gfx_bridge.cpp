@@ -37,6 +37,7 @@
 #include "gdx_camera_pose.h"
 #ifdef GDX_OPENXR
 #include "vr/gdx_openxr.h"
+#include "vr/gdx_vr_system.h" // kGameUnitsPerMeter
 #endif
 extern "C" {
 #include "mio0.h"
@@ -2961,6 +2962,9 @@ static int gGdxVrVehMachine = -1; // this tick's model, not interpolated (it cha
 // projection uses a different near plane from the game camera (the cockpit view).
 static float gGdxVrEyeFogScale = 1.0f;
 static float gGdxVrEyeFogBias = 0.0f;
+// Interpreter::SetVrClipNotReject for the eye being replayed: the cockpit eye sits on the player's
+// own machine, whose hull faces the reject microcode would drop whenever a corner leaves the view.
+static bool gGdxVrEyeClipNotReject = false;
 #endif
 
 static inline bool GdxVrStereoTick() {
@@ -3511,14 +3515,16 @@ class N64DisplayListAdapter {
                 gGdxVrEyeFogScale = bGame / bEye;
                 gGdxVrEyeFogBias = aGame - gGdxVrEyeFogScale * aEye;
             }
-            if (!gdx_vr::BuildActiveEyeProjView(eye, at, up, nearZ, farZ, pv, false)) {
+            gGdxVrEyeClipNotReject = true;
+            // Life-size: the world-scale setting is a chase-view preference.
+            if (!gdx_vr::BuildActiveEyeProjView(eye, at, up, nearZ, farZ, pv, false, gdx_vr::kGameUnitsPerMeter)) {
                 return false;
             }
         } else {
             const float eye[3] = { pose.eyeX, pose.eyeY, pose.eyeZ };
             const float at[3] = { pose.atX, pose.atY, pose.atZ };
             const float up[3] = { pose.upX, pose.upY, pose.upZ };
-            if (!gdx_vr::BuildActiveEyeProjView(eye, at, up, pose.nearZ, pose.farZ, pv, true)) {
+            if (!gdx_vr::BuildActiveEyeProjView(eye, at, up, pose.nearZ, pose.farZ, pv, true, 0.0f)) {
                 return false;
             }
         }
@@ -9115,6 +9121,7 @@ extern "C" void gdx_gfx_run(void* dl, size_t dl_size, GdxTaskUcode taskUcode) {
             EyeCtx* c = static_cast<EyeCtx*>(user);
             gGdxVrEyeFogScale = 1.0f; // the camera refill below sets a remap if this eye needs one
             gGdxVrEyeFogBias = 0.0f;
+            gGdxVrEyeClipNotReject = false;
             c->adapter->GdxP0RefillScratch(t);
             c->adapter->GdxVpRefillScratch(t);
             c->adapter->GdxVtxRefillScratch(t);
@@ -9134,6 +9141,7 @@ extern "C" void gdx_gfx_run(void* dl, size_t dl_size, GdxTaskUcode taskUcode) {
             c->interp->SetVrPass(Fast::Interpreter::VrPass::WorldOnly);
             c->interp->SetVrEyeTanHalfY(gdx_vr::ActiveEyeTanHalfY());
             c->interp->SetVrFogRemap(gGdxVrEyeFogScale, gGdxVrEyeFogBias);
+            c->interp->SetVrClipNotReject(gGdxVrEyeClipNotReject);
             gdx_perf_sub_begin(GDX_PERF_SUB_IRUN);
             c->interp->StartFrame();
             c->interp->Run(reinterpret_cast<Gfx*>(c->commands), {});
@@ -9150,6 +9158,7 @@ extern "C" void gdx_gfx_run(void* dl, size_t dl_size, GdxTaskUcode taskUcode) {
             c->interp->SetVrEyeTarget(static_cast<uint32_t>(width), static_cast<uint32_t>(height));
             c->interp->SetVrPass(Fast::Interpreter::VrPass::HudOnly);
             c->interp->SetVrFogRemap(1.0f, 0.0f);
+            c->interp->SetVrClipNotReject(false);
             // Rendered over black and over white; the presenter recovers coverage from the pair.
             void (*savedHook)(Fast::Interpreter*) = Fast::Interpreter::sPortAfterClearHook;
             if (whiteBackground != 0) {

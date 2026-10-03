@@ -65,8 +65,9 @@ void PresentStereoTick(const StereoCallbacks& callbacks);
 // replay or on degenerate camera input; `out` is then untouched.
 // levelPitch: level the forward direction against the track's up (chase view; the chase camera
 // looks down at the machine). The cockpit view passes false.
+// unitsPerMeter: world units per tracked metre; 0 uses gEnhancements.VR.WorldScale (the chase view).
 bool BuildActiveEyeProjView(const float eye[3], const float at[3], const float up[3], float nearZ, float farZ,
-                            float out[4][4], bool levelPitch);
+                            float out[4][4], bool levelPitch, float unitsPerMeter);
 
 // Cockpit view: the viewer rides on the machine's roof instead of the chase camera.
 // Toggled with the Steam Frame controller's right B button; starts from gEnhancements.VR.CameraMode

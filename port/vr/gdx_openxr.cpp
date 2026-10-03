@@ -2361,7 +2361,7 @@ void CockpitOffsets(int machine, float* forward, float* up, float* tilt) {
 }
 
 bool BuildActiveEyeProjView(const float eye[3], const float at[3], const float up[3], float nearZ, float farZ,
-                            float out[4][4], bool levelPitch) {
+                            float out[4][4], bool levelPitch, float unitsPerMeterIn) {
     State& s = S();
     if (!s.activeEye.active) {
         return false;
@@ -2404,7 +2404,7 @@ bool BuildActiveEyeProjView(const float eye[3], const float at[3], const float u
             anchor = level;
         }
     }
-    const float unitsPerMeter = SettingFloat(kSetWorldScale);
+    const float unitsPerMeter = unitsPerMeterIn > 0.0f ? unitsPerMeterIn : SettingFloat(kSetWorldScale);
     EyeProjView(anchor, s.activeEye.pose, s.activeEye.fov, unitsPerMeter, nearZ, farZ, out);
     const Vec3 offset = AnchorToWorld(anchor, s.activeEye.pose.position);
     s.activeEye.worldPos = { anchor.origin.x + offset.x * unitsPerMeter, anchor.origin.y + offset.y * unitsPerMeter,

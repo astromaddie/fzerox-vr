@@ -124,6 +124,9 @@ float PickRefreshRate(const float* rates, unsigned count, float hz);
 // does not describe (edited custom machines, model packs), gets kCockpitFallbackRoof. Heights come
 // from the stock LOD1 meshes (gdx_vr_roof_table.h) and are interpolated between table rows.
 constexpr float kCockpitFallbackRoof = 15.0f;
+// The game's own scale, 10 world units per metre (a machine is ~5.6 m long). The cockpit view is
+// always life-size; gEnhancements.VR.WorldScale only scales the chase view.
+constexpr float kGameUnitsPerMeter = 10.0f;
 float CockpitRoofHeight(int machine, float forward);
 
 // Clamp `value` into the setting's range. NaN and infinities fall back to the default; integer

@@ -1090,7 +1090,7 @@ void GdxMenu::RegisterMenu() {
                                    .Min(0.0f)
                                    .Max(20.0f)
                                    .Step(0.5f)
-                                   .DefaultValue(5.0f)
+                                   .DefaultValue(4.7f)
                                    .ShowButtons(false)
                                    .LabelPosition(UIWidgets::LabelPositions::Near)
                                    .Tooltip("How far above the machine's roof the cockpit view sits, in game units\n"
@@ -1104,7 +1104,7 @@ void GdxMenu::RegisterMenu() {
                                    .Min(-12.0f)
                                    .Max(12.0f)
                                    .Step(0.5f)
-                                   .DefaultValue(3.0f)
+                                   .DefaultValue(5.8f)
                                    .ShowButtons(false)
                                    .LabelPosition(UIWidgets::LabelPositions::Near)
                                    .Tooltip("Moves the cockpit view forward (positive) or back along the machine,\n"
@@ -1128,7 +1128,7 @@ void GdxMenu::RegisterMenu() {
         AddWidget("VR", "VR Settings", SECTION_COLUMN_1,
                   WidgetInfo{ .name = "View", .type = GdxUI::WIDGET_SEPARATOR_TEXT });
         AddWidget("VR", "VR Settings", SECTION_COLUMN_1,
-                  WidgetInfo{ .name = "World scale (units per metre)", .cVar = "gEnhancements.VR.WorldScale",
+                  WidgetInfo{ .name = "Chase world scale (units per metre)", .cVar = "gEnhancements.VR.WorldScale",
                               .type = GdxUI::WIDGET_CVAR_SLIDER_FLOAT }
                       .Options(UIWidgets::FloatSliderOptions{ .flags = ImGuiSliderFlags_AlwaysClamp }
                                    .Format("%.1f")
@@ -1138,8 +1138,9 @@ void GdxMenu::RegisterMenu() {
                                    .DefaultValue(10.0f)
                                    .ShowButtons(false)
                                    .LabelPosition(UIWidgets::LabelPositions::Near)
-                                   .Tooltip("Game units per real metre. 10 is the game's own scale; lower makes\n"
-                                            "the world feel bigger, higher makes it feel smaller."))
+                                   .Tooltip("Chase view: game units per real metre. 10 is the game's own scale;\n"
+                                            "lower makes the world feel bigger, higher makes it feel smaller.\n"
+                                            "The cockpit view is always life-size (10)."))
                       .SearchTerms("scale size giant miniature"));
         AddWidget("VR", "VR Settings", SECTION_COLUMN_1,
                   WidgetInfo{ .name = "HUD height (metres)", .cVar = "gEnhancements.VR.HudHeight",

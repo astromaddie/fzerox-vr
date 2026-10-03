@@ -320,7 +320,7 @@ from then on. On load, out-of-range or non-finite values are clamped and written
 the wrong CVar type, e.g. `"HudHeight": 2`, is converted); every read clamps again. The log prints a
 `[vr] settings:` line with the effective values. Ranges: `Stereo`, `WideCull`, `CameraMode`,
 `HorizonLock`, `LevelPitch` 0..1; `HudAspect` 4/3..4 (default 1.5); `HudHeight` 0.3..3 m (1.2);
-`RoofForward` -12..12 world units (3); `RoofClearance` 0..20 world units (5); `CockpitTilt` 0..1 (1); `WorldScale` 2..50 (10); `Haptics` 0..1 (0.6);
+`RoofForward` -12..12 world units (5.8); `RoofClearance` 0..20 world units (4.7); `CockpitTilt` 0..1 (1); `WorldScale` 2..50 (10, chase view only; the cockpit is always 10); `Haptics` 0..1 (0.6);
 `RefreshRate` 60..144 (90). Chase/cockpit toggles also save `CameraMode`. The VR tab of the menu (below)
 edits all of these except `Stereo` and `WideCull`.
 
@@ -375,9 +375,10 @@ edits all of these except `Stereo` and `WideCull`.
   (start mode `gEnhancements.VR.CameraMode`, 0 chase / 1 cockpit; `GDX_VR_COCKPIT=1` for tests).
   The eye rides on the machine's roof, so the nose is in view ahead. It is anchored at the followed
   racer's rendered position (`modelPos`, the model's underside), moved `gEnhancements.VR.RoofForward`
-  (3) world units along its forward, then up by that machine's roof height there plus
-  `gEnhancements.VR.RoofClearance` (5, about 0.5 m at the default world scale). Defaults moved from
-  0 and 3 after the first look (2026-10-03: "slightly too low, slightly too far back").
+  (5.8) world units along its forward, then up by that machine's roof height there plus
+  `gEnhancements.VR.RoofClearance` (4.7, about 0.5 m; the cockpit is life-size). Defaults moved from
+  0 and 3 after the first look (2026-10-03: "slightly too low, slightly too far back"), then to the
+  wearer's own slider settings (5.8 forward, 4.7 clearance).
   - Orientation: the view's up blends from the travel basis (`trueBasis.y`) to the body's
     (`modelBasis.y`: the steering lean and the smoothed tilt the machine is drawn with) by
     `gEnhancements.VR.CockpitTilt` (1 = tilts with the machine). The heading is the travel forward
@@ -400,6 +401,15 @@ edits all of these except `Stereo` and `WideCull`.
   - Open: distant backdrop buildings flickered in cockpit view (seen with near 2). Suspect depth
     precision (24-bit depth, 8x worse than at near 16) or the interpreter's far-plane rejection
     (`z > w`). Not yet diagnosed.
+  - Clip, not reject: the machines are drawn with the F3DEX2.Rej microcode, which the interpreter
+    emulates by dropping any triangle with a vertex behind the eye, inside the near plane or past
+    twice the viewport. From the roof, a hull face hit that as soon as one corner left the view, so
+    whole faces flickered out (2026-10-03 wear). Cockpit eyes set
+    `Interpreter::SetVrClipNotReject`, so those triangles go to the homogeneous clipper (added after
+    the reject emulation, and the reason the "giant wedges" it guarded against no longer occur).
+    Flat mode and the chase view keep the reject behaviour.
+  - Scale: always life-size, `kGameUnitsPerMeter` (10). After wearing it the user asked for 1:1 in
+    the cockpit while keeping a smaller world scale (2) for the chase view.
   - The pose is snapshotted per tick with the camera poses and interpolated at the frame's t, so it
     stays phase-locked to the rendered machine.
   - Verified unattended (before the tilt and near-plane change): a forced-render cockpit eye dump in
