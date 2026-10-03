@@ -466,16 +466,28 @@ whose pause cannot be extended.
   and a race in progress is paused with one synthetic START on open and resumed with another on close (only
   if that START paused it). START is also withheld from the game while View is held, after the chord and
   while the menu is open, so press View first.
-- Navigation: D-pad (the left stick also acts as a D-pad, for the Index and Touch profiles), A confirm, B
-  cancel, bumpers switch tabs, View short press closes. The menu is fed through
-  `gdx_imgui_nav_set_external()` because the session reads the controllers through OpenXR actions, not an
-  SDL gamepad. There is no pointer ray yet.
+- **Laser pointer** (standard section 3): a ray from the right hand's aim pose, hit-tested against the flat
+  quad (`RayHitsPanel`, the same pose `FlatQuadPose()` submits), drives ImGui's mouse; ImGui draws its
+  cursor at the hit. The trigger clicks (`trigger/value`, down above 0.6, up below 0.45) with a UI-click
+  buzz on the right hand; A also clicks while the laser is on the panel; right stick Y scrolls. The laser
+  is a 6 mm solid quad layer from the hand to the hit (1.5 m when off the panel), turned toward the head
+  and composited over the panel. Right hand only: there is no dominant-hand setting yet.
+- Navigation: D-pad (the left stick also acts as a D-pad, for the Index and Touch profiles), A confirm
+  (when the laser is off the panel), B or X back out, bumpers switch tabs, View short press closes. The
+  menu is fed through `gdx_imgui_nav_set_external()` because the session reads the controllers through
+  OpenXR actions, not an SDL gamepad. **Fixed 2026-10-03:** on Linux the SDL2 ImGui backend claims
+  `HasGamepad` (under Steam it sees Steam's idle virtual pad), and the nav bridge returned before feeding
+  the headset pad, so no menu input worked. While a headset pad is installed the bridge now switches the
+  backend to manual mode with no gamepads and is the only gamepad writer.
+- The menu's visibility is saved (`gOpenMenuBar`), so quitting with it open reopened it at the next launch.
+  A VR session closes it once on its first running frame; the chord opens it.
 - VR tab (only on `--vr` launches): horizon lock, level chase pitch, cockpit view; world scale, HUD height,
   HUD aspect (applies on restart); haptics strength, refresh rate; how to recentre and "Reset VR settings
   to defaults"; **Quit to Steam** with a Quit / Cancel confirm. Quit calls `xrRequestExitSession` and the
   host loop leaves when the runtime reaches EXITING (after 3 s regardless).
 - Not done yet: comfort turn settings, dominant-hand, HUD mode/distance, per-tab Defaults, gaze/pointer.
-  Not verified: nothing here has been drawn or navigated in a headset or even run with a ROM.
+  Not verified: the pointer, the nav fix and the launch close are build-verified only (worn: the menu
+  opened, but took no input before the fix).
 
 Not verified on a headset (system layer and haptics): the View binding on the Frame profile, that the
 Frame profile accepts `/output/haptic`, the hold feel, the buzz, and how the rumble pattern feels.

@@ -53,6 +53,74 @@ Vec3 Rotate(const Quat& q, const Vec3& v) {
     return Add(Add(v, Scale(t, q.w)), Cross(u, t));
 }
 
+bool RayHitsPanel(const Vec3& origin, const Vec3& dir, const Pose& panel, float width, float height, float* u,
+                  float* v, float* distance) {
+    const Vec3 normal = Rotate(panel.orientation, { 0.0f, 0.0f, 1.0f });
+    const float facing = Dot(dir, normal);
+    if (facing >= -1e-4f) {
+        return false; // parallel, or arriving from behind the panel
+    }
+    const Vec3 toCentre = { panel.position.x - origin.x, panel.position.y - origin.y, panel.position.z - origin.z };
+    const float t = Dot(toCentre, normal) / facing;
+    if (t <= 0.0f) {
+        return false; // the panel is behind the ray
+    }
+    const Vec3 hit = { origin.x + dir.x * t - panel.position.x, origin.y + dir.y * t - panel.position.y,
+                       origin.z + dir.z * t - panel.position.z };
+    const float px = Dot(hit, Rotate(panel.orientation, { 1.0f, 0.0f, 0.0f }));
+    const float py = Dot(hit, Rotate(panel.orientation, { 0.0f, 1.0f, 0.0f }));
+    const float hu = px / width + 0.5f;
+    const float hv = 0.5f - py / height;
+    if (hu < 0.0f || hu > 1.0f || hv < 0.0f || hv > 1.0f) {
+        return false;
+    }
+    *u = hu;
+    *v = hv;
+    *distance = t;
+    return true;
+}
+
+bool BeamPose(const Vec3& from, const Vec3& to, const Vec3& viewer, Pose* out, float* length) {
+    Vec3 y = { to.x - from.x, to.y - from.y, to.z - from.z };
+    const float len = std::sqrt(Dot(y, y));
+    if (!Normalize(&y)) {
+        return false;
+    }
+    const Vec3 centre = Add(from, Scale(y, len * 0.5f));
+    // Face the viewer: the component of (viewer - centre) across the beam. Looking straight down
+    // the beam there is none; any perpendicular will do then.
+    Vec3 z = { viewer.x - centre.x, viewer.y - centre.y, viewer.z - centre.z };
+    z = Add(z, Scale(y, -Dot(z, y)));
+    if (!Normalize(&z)) {
+        z = std::fabs(y.y) < 0.9f ? Cross(y, { 0.0f, 1.0f, 0.0f }) : Cross(y, { 1.0f, 0.0f, 0.0f });
+        Normalize(&z);
+    }
+    const Vec3 x = Cross(y, z);
+    // Rotation matrix with columns x, y, z -> quaternion.
+    const float m00 = x.x, m01 = y.x, m02 = z.x;
+    const float m10 = x.y, m11 = y.y, m12 = z.y;
+    const float m20 = x.z, m21 = y.z, m22 = z.z;
+    Quat q;
+    const float trace = m00 + m11 + m22;
+    if (trace > 0.0f) {
+        const float s = std::sqrt(trace + 1.0f) * 2.0f;
+        q = { (m21 - m12) / s, (m02 - m20) / s, (m10 - m01) / s, 0.25f * s };
+    } else if (m00 > m11 && m00 > m22) {
+        const float s = std::sqrt(1.0f + m00 - m11 - m22) * 2.0f;
+        q = { 0.25f * s, (m01 + m10) / s, (m02 + m20) / s, (m21 - m12) / s };
+    } else if (m11 > m22) {
+        const float s = std::sqrt(1.0f + m11 - m00 - m22) * 2.0f;
+        q = { (m01 + m10) / s, 0.25f * s, (m12 + m21) / s, (m02 - m20) / s };
+    } else {
+        const float s = std::sqrt(1.0f + m22 - m00 - m11) * 2.0f;
+        q = { (m02 + m20) / s, (m12 + m21) / s, 0.25f * s, (m10 - m01) / s };
+    }
+    out->orientation = q;
+    out->position = centre;
+    *length = len;
+    return true;
+}
+
 bool AnchorFromLookAt(const Vec3& eye, const Vec3& at, const Vec3& up, Anchor* out) {
     Vec3 back = { eye.x - at.x, eye.y - at.y, eye.z - at.z };
     if (!Normalize(&back)) {

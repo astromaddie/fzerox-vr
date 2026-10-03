@@ -1,6 +1,10 @@
 #include "gdx_imgui_nav.h"
 
+#include <cfloat>
+#include <cstring>
+
 #include <imgui.h>
+#include <imgui_impl_sdl2.h>
 #include <SDL2/SDL.h>
 
 #include "ship/Context.h"
@@ -23,6 +27,29 @@ bool sOwnsFeed = false;
 // not outlive the call.
 GdxImguiNavPad sExternal{};
 bool sHaveExternal = false;
+// The SDL2 backend was put in manual mode (no gamepads) for an external pad.
+bool sBackendMuted = false;
+bool sPointerWasActive = false;
+
+bool BackendIsSdl2(const ImGuiIO& io) {
+    return io.BackendPlatformName != nullptr && std::strncmp(io.BackendPlatformName, "imgui_impl_sdl2", 15) == 0;
+}
+
+// The headset pointer, as ImGui's mouse. Mouse events have no backend writer on the Frame (no
+// mouse); the position is re-sent every frame so it wins over any backend global-mouse poll.
+void FeedExternalPointer(ImGuiIO& io) {
+    if (sExternal.pointer_active) {
+        io.AddMousePosEvent(sExternal.pointer_x * io.DisplaySize.x, sExternal.pointer_y * io.DisplaySize.y);
+    } else if (sPointerWasActive) {
+        io.AddMousePosEvent(-FLT_MAX, -FLT_MAX);
+    }
+    io.AddMouseButtonEvent(0, sExternal.pointer_down != 0);
+    if (sExternal.wheel_y != 0.0f) {
+        io.AddMouseWheelEvent(0.0f, sExternal.wheel_y);
+    }
+    io.MouseDrawCursor = sExternal.pointer_active != 0;
+    sPointerWasActive = sExternal.pointer_active != 0;
+}
 
 // ImGui_ImplSDL2_UpdateGamepadAnalog's thumb deadzone, normalized. Matching it keeps the stick
 // feeling identical whichever of the two feeds is live on a given platform.
@@ -137,6 +164,26 @@ extern "C" void gdx_imgui_nav_tick(void) {
         io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
     } else {
         io.ConfigFlags &= ~ImGuiConfigFlags_NavEnableGamepad;
+    }
+    // An external (headset) pad is the only gamepad source while installed. Muting the SDL2 backend
+    // takes effect from its next poll: it already fed this frame, so skip ours once rather than
+    // write the same keys twice.
+    if (sHaveExternal && !sBackendMuted && BackendIsSdl2(io)) {
+        ImGui_ImplSDL2_SetGamepadMode(ImGui_ImplSDL2_GamepadMode_Manual, nullptr, 0);
+        sBackendMuted = true;
+        return;
+    }
+    if (!sHaveExternal && sBackendMuted) {
+        ImGui_ImplSDL2_SetGamepadMode(ImGui_ImplSDL2_GamepadMode_AutoFirst, nullptr, 0);
+        sBackendMuted = false;
+    }
+    if (!sHaveExternal && sPointerWasActive) {
+        io.AddMousePosEvent(-FLT_MAX, -FLT_MAX);
+        io.MouseDrawCursor = false;
+        sPointerWasActive = false;
+    }
+    if (sHaveExternal) {
+        FeedExternalPointer(io);
     }
     if (!navOn) {
         return;

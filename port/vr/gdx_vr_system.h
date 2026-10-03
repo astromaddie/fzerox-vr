@@ -110,6 +110,10 @@ class Chord {
 // direction (so "down" passes -y).
 bool StickAsDpad(bool wasOn, float positive);
 
+// Menu pointer trigger as a click, with hysteresis: down above 0.6, up again below 0.45
+// (standard.md section 3), so a trigger resting near one threshold does not chatter.
+bool TriggerClick(bool wasDown, float value);
+
 // The highest of `rates` (Hz, as enumerated by the runtime) that is <= hz, allowing 0.5 Hz of slack
 // for values such as 89.99; 0 when none qualifies or the list is empty.
 float PickRefreshRate(const float* rates, unsigned count, float hz);

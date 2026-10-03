@@ -286,6 +286,42 @@ static void CaseDegenerate() {
     check("degenerate: up parallel to view refused", !AnchorFromLookAt({ 0, 0, 0 }, { 0, 5, 0 }, { 0, 1, 0 }, &a));
 }
 
+static void CasePointer() {
+    // A panel 2 m ahead (-z), facing the viewer, 2.4 x 1.35 m, unrotated.
+    const Pose panel = { { 0.0f, 0.0f, 0.0f, 1.0f }, { 0.0f, 0.0f, -2.0f } };
+    float u = -1.0f, v = -1.0f, d = -1.0f;
+    check("straight ahead hits the centre", RayHitsPanel({ 0, 0, 0 }, { 0, 0, -1 }, panel, 2.4f, 1.35f, &u, &v, &d));
+    checkNear("centre u", u, 0.5, 1e-6);
+    checkNear("centre v", v, 0.5, 1e-6);
+    checkNear("centre distance", d, 2.0, 1e-6);
+    // Aim at the top-right quarter point (x = +0.6, y = +0.3375): u 0.75, v 0.25 (v runs downward).
+    Vec3 dir = { 0.6f, 0.3375f, -2.0f };
+    const float n = std::sqrt(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z);
+    dir = { dir.x / n, dir.y / n, dir.z / n };
+    check("off-centre hit", RayHitsPanel({ 0, 0, 0 }, dir, panel, 2.4f, 1.35f, &u, &v, &d));
+    checkNear("right is u > 0.5", u, 0.75, 1e-5);
+    checkNear("up is v < 0.5", v, 0.25, 1e-5);
+    check("pointing away misses", !RayHitsPanel({ 0, 0, 0 }, { 0, 0, 1 }, panel, 2.4f, 1.35f, &u, &v, &d));
+    check("off the edge misses", !RayHitsPanel({ 0, 0, 0 }, { 0.8f, 0.0f, -0.6f }, panel, 2.4f, 1.35f, &u, &v, &d));
+    check("from behind misses", !RayHitsPanel({ 0, 0, -3 }, { 0, 0, 1 }, panel, 2.4f, 1.35f, &u, &v, &d));
+    // Yawed 90 degrees left (+y): the panel now sits at -x facing +x.
+    const float h = std::sqrt(0.5f);
+    const Pose yawed = { { 0.0f, h, 0.0f, h }, { -2.0f, 0.0f, 0.0f } };
+    check("yawed panel hit", RayHitsPanel({ 0, 0, 0 }, { -1, 0, 0 }, yawed, 2.4f, 1.35f, &u, &v, &d));
+    checkNear("yawed centre u", u, 0.5, 1e-5);
+
+    Pose beam;
+    float len = 0.0f;
+    check("beam pose", BeamPose({ 0.2f, -0.3f, 0.0f }, { 0.2f, -0.3f, -2.0f }, { 0, 0, 0.5f }, &beam, &len));
+    checkNear("beam length", len, 2.0, 1e-5);
+    checkNear("beam centre z", beam.position.z, -1.0, 1e-5);
+    const Vec3 by = Rotate(beam.orientation, { 0, 1, 0 });
+    checkNear("beam +y runs along the ray", by.z, -1.0, 1e-4);
+    const Vec3 bz = Rotate(beam.orientation, { 0, 0, 1 });
+    check("beam faces the viewer", bz.y > 0.5f); // viewer is above the beam (0 vs -0.3)
+    check("degenerate beam", !BeamPose({ 1, 1, 1 }, { 1, 1, 1 }, { 0, 0, 0 }, &beam, &len));
+}
+
 int main() {
     std::printf("gdx_vr_math_tests\n");
     CaseMatchesGameCamera("straight ahead", { 0, 0, 0 }, { 0, 0, -100 }, { 0, 1, 0 }, 70.0f, 0.0f, 0.0f);
@@ -301,6 +337,7 @@ int main() {
     CaseAsymmetricEdges();
     CaseFixedPointFit();
     CaseDegenerate();
+    CasePointer();
     std::printf("%d checks, %d failed\n", gChecks, gFails);
     return gFails == 0 ? 0 : 1;
 }

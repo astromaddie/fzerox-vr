@@ -259,6 +259,14 @@ static void CaseSettings() {
     }());
 }
 
+static void CaseTriggerClick() {
+    using gdx_vr::TriggerClick;
+    check("trigger below 0.6 does not click", !TriggerClick(false, 0.59f));
+    check("trigger above 0.6 clicks", TriggerClick(false, 0.61f));
+    check("held click survives a dip to 0.5", TriggerClick(true, 0.5f));
+    check("click releases below 0.45", !TriggerClick(true, 0.44f));
+}
+
 static void CaseRoofHeight() {
     using gdx_vr::CockpitRoofHeight;
     using gdx_vr::kCockpitFallbackRoof;
@@ -291,6 +299,7 @@ int main() {
     CaseRefreshPick();
     CaseSettings();
     CaseRoofHeight();
+    CaseTriggerClick();
     std::printf("%d checks, %d failed\n", gChecks, gFails);
     return gFails == 0 ? 0 : 1;
 }

@@ -104,6 +104,8 @@ namespace {
 // Flat-mode quad placement in the LOCAL reference space (metres): ahead of the viewer at eye height.
 constexpr float kQuadDistance = 2.0f;
 constexpr float kQuadWidth = 2.4f;
+constexpr float kBeamWidth = 0.006f;    // metres: the menu pointer's laser
+constexpr float kBeamMissLength = 1.5f; // metres: laser length when it is off the menu
 // Race HUD: head-locked in VIEW space 1.5 m ahead, gEnhancements.VR.HudHeight metres tall (default
 // 1.2, about 44 degrees) at gEnhancements.VR.HudAspect (default 1.5:1, about 62 degrees wide). The
 // aspect is read when the session starts (it sizes the swapchain); the height every frame.
@@ -204,6 +206,18 @@ struct XrInput {
     XrAction dDown = XR_NULL_HANDLE;
     XrAction dLeft = XR_NULL_HANDLE;
     XrAction dRight = XR_NULL_HANDLE;
+    // Menu pointer (standard.md section 3): the right hand's aim pose and trigger.
+    XrAction aimPose = XR_NULL_HANDLE;
+    XrAction pointerTrigger = XR_NULL_HANDLE;
+    XrSpace aimSpace = XR_NULL_HANDLE;
+    bool triggerDown = false;   // TriggerClick hysteresis state
+    bool pointerDown = false;   // left mouse button as last sent
+    bool pointerOnPanel = false;
+    float pointerU = 0.0f;
+    float pointerV = 0.0f;
+    bool beamValid = false;     // beamPose / beamLength describe this frame's laser
+    Pose beamPose{};
+    float beamLength = 0.0f;
     GdxInputPad pad{};
     bool any = false;                 // pad holds input from this tick's sync
 };
@@ -223,7 +237,9 @@ struct State {
     Swapchain quad;
     Swapchain eyes[2];
     Swapchain hud;
+    Swapchain beam; // solid-colour texture for the menu pointer's laser quad
     long long hudRenderedTick = -1;
+    XrTime lastDisplayTime = 0; // the latest xrWaitFrame prediction, for locating controller poses
 
     GlFns gl;
     GLuint drawFbo = 0;
@@ -258,6 +274,7 @@ struct State {
     // is forced flat while it is visible; game input is withheld; XR actions drive its navigation.
     bool menuOpen = false;
     bool menuPausedGame = false; // we sent START to pause a race when the menu opened
+    bool menuLaunchChecked = false; // the menu's saved-open state was cleared for this VR launch
     int cameraModeSeen = -1;     // gEnhancements.VR.CameraMode as last applied to `cockpit`
     double quitRequestedS = 0.0; // Quit to Steam: xrRequestExitSession time, 0 = not requested
 
@@ -558,6 +575,9 @@ void DestroySession() {
     gfx_pre_present_hook = nullptr;
     gGdxVrInputMerge = nullptr;
     Fast::Interpreter::SetVrWorldSpriteResolver(nullptr);
+    if (s.input.aimSpace != XR_NULL_HANDLE) {
+        xrDestroySpace(s.input.aimSpace);
+    }
     if (s.input.set != XR_NULL_HANDLE) {
         xrDestroyActionSet(s.input.set);
     }
@@ -581,6 +601,7 @@ void DestroySession() {
     DestroySwapchain(s.eyes[0]);
     DestroySwapchain(s.eyes[1]);
     DestroySwapchain(s.hud);
+    DestroySwapchain(s.beam);
     if (s.localSpace != XR_NULL_HANDLE) {
         xrDestroySpace(s.localSpace);
         s.localSpace = XR_NULL_HANDLE;
@@ -654,7 +675,9 @@ bool CreateInput() {
         !CreateAction(XR_ACTION_TYPE_BOOLEAN_INPUT, "dpad_up", "D-pad up", &in.dUp) ||
         !CreateAction(XR_ACTION_TYPE_BOOLEAN_INPUT, "dpad_down", "D-pad down", &in.dDown) ||
         !CreateAction(XR_ACTION_TYPE_BOOLEAN_INPUT, "dpad_left", "D-pad left", &in.dLeft) ||
-        !CreateAction(XR_ACTION_TYPE_BOOLEAN_INPUT, "dpad_right", "D-pad right", &in.dRight)) {
+        !CreateAction(XR_ACTION_TYPE_BOOLEAN_INPUT, "dpad_right", "D-pad right", &in.dRight) ||
+        !CreateAction(XR_ACTION_TYPE_POSE_INPUT, "menu_pointer", "Menu pointer", &in.aimPose) ||
+        !CreateAction(XR_ACTION_TYPE_FLOAT_INPUT, "menu_select", "Menu select", &in.pointerTrigger)) {
         return false;
     }
     if (s.frameControllerExt) {
@@ -680,7 +703,10 @@ bool CreateInput() {
                           { in.dUp, "/user/hand/left/input/dpad_up/click" },
                           { in.dDown, "/user/hand/left/input/dpad_down/click" },
                           { in.dLeft, "/user/hand/left/input/dpad_left/click" },
-                          { in.dRight, "/user/hand/left/input/dpad_right/click" } });
+                          { in.dRight, "/user/hand/left/input/dpad_right/click" },
+                          // Paths as GoldenEye VR binds them on the Frame (worn there).
+                          { in.aimPose, "/user/hand/right/input/aim/pose" },
+                          { in.pointerTrigger, "/user/hand/right/input/trigger/value" } });
     }
     SuggestBindings("/interaction_profiles/valve/index_controller",
                     { { in.stick, "/user/hand/left/input/thumbstick" },
@@ -694,7 +720,9 @@ bool CreateInput() {
                       // Index has no View button: the free left A button stands in for it.
                       { in.sysView, "/user/hand/left/input/a/click" },
                       { in.hapticLeft, "/user/hand/left/output/haptic" },
-                      { in.hapticRight, "/user/hand/right/output/haptic" } });
+                      { in.hapticRight, "/user/hand/right/output/haptic" },
+                      { in.aimPose, "/user/hand/right/input/aim/pose" },
+                      { in.pointerTrigger, "/user/hand/right/input/trigger/value" } });
     SuggestBindings("/interaction_profiles/oculus/touch_controller",
                     { { in.stick, "/user/hand/left/input/thumbstick" },
                       { in.cstick, "/user/hand/right/input/thumbstick" },
@@ -707,12 +735,20 @@ bool CreateInput() {
                       // Touch has no View button: the free left Y button stands in for it.
                       { in.sysView, "/user/hand/left/input/y/click" },
                       { in.hapticLeft, "/user/hand/left/output/haptic" },
-                      { in.hapticRight, "/user/hand/right/output/haptic" } });
+                      { in.hapticRight, "/user/hand/right/output/haptic" },
+                      { in.aimPose, "/user/hand/right/input/aim/pose" },
+                      { in.pointerTrigger, "/user/hand/right/input/trigger/value" } });
     XrSessionActionSetsAttachInfo attach{ XR_TYPE_SESSION_ACTION_SETS_ATTACH_INFO };
     attach.countActionSets = 1;
     attach.actionSets = &s.input.set;
     if (!Check(xrAttachSessionActionSets(s.session, &attach), "xrAttachSessionActionSets")) {
         return false;
+    }
+    XrActionSpaceCreateInfo asi{ XR_TYPE_ACTION_SPACE_CREATE_INFO };
+    asi.action = in.aimPose;
+    asi.poseInActionSpace.orientation.w = 1.0f;
+    if (!Check(xrCreateActionSpace(s.session, &asi, &in.aimSpace), "xrCreateActionSpace(menu pointer)")) {
+        in.aimSpace = XR_NULL_HANDLE; // no pointer; pad navigation still works
     }
     in.ready = true;
     gGdxVrInputMerge = &MergeXrInput;
@@ -744,6 +780,10 @@ void FlushHaptics() {
     }
     sfvr_haptic_flush(&s.input.haptics, SettingFloat(kSetHaptics), &ApplyHaptic, nullptr);
 }
+
+void FillSwapchain(Swapchain& sc, float r, float g, float b, float a);
+Pose FlatQuadPose();
+float FlatQuadHeight();
 
 // Track the G-Diffuser menu's visibility (it can also be closed with Back or F1). Around a race the
 // game is paused for as long as the menu is up: opening sends the game one START (only when a race
@@ -813,6 +853,12 @@ void SyncInput() {
             *x = st.currentState.x;
             *y = st.currentState.y;
         }
+    };
+    auto value = [&](XrAction action) {
+        XrActionStateGetInfo gi{ XR_TYPE_ACTION_STATE_GET_INFO };
+        gi.action = action;
+        XrActionStateFloat st{ XR_TYPE_ACTION_STATE_FLOAT };
+        return (XR_SUCCEEDED(xrGetActionStateFloat(s.session, &gi, &st)) && st.isActive) ? st.currentState : 0.0f;
     };
     // N64 OSContPad bits (decomp/include/PR/os_cont.h).
     unsigned short buttons = 0;
@@ -911,8 +957,52 @@ void SyncInput() {
         nav.down = boolean(in.dDown) || in.stickDir[1];
         nav.left = boolean(in.dLeft) || in.stickDir[2];
         nav.right = boolean(in.dRight) || in.stickDir[3];
-        nav.confirm = boolean(in.a);
-        nav.cancel = boolean(in.b);
+        // Laser pointer (standard.md section 3): the right hand's aim ray on the flat menu panel,
+        // fed to ImGui as its mouse. Trigger clicks with hysteresis, A also clicks while the laser
+        // is on the panel (and is pad confirm otherwise), right stick Y scrolls.
+        bool onPanel = false;
+        float u = 0.0f, v = 0.0f;
+        in.beamValid = false;
+        if (in.aimSpace != XR_NULL_HANDLE && s.lastDisplayTime != 0 && s.quad.width > 0) {
+            const XrSpaceLocationFlags valid = XR_SPACE_LOCATION_ORIENTATION_VALID_BIT | XR_SPACE_LOCATION_POSITION_VALID_BIT;
+            XrSpaceLocation aim{ XR_TYPE_SPACE_LOCATION };
+            XrSpaceLocation head{ XR_TYPE_SPACE_LOCATION };
+            if (XR_SUCCEEDED(xrLocateSpace(in.aimSpace, s.localSpace, s.lastDisplayTime, &aim)) &&
+                (aim.locationFlags & valid) == valid &&
+                XR_SUCCEEDED(xrLocateSpace(s.viewSpace, s.localSpace, s.lastDisplayTime, &head)) &&
+                (head.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) != 0) {
+                const Quat aq = { aim.pose.orientation.x, aim.pose.orientation.y, aim.pose.orientation.z,
+                                  aim.pose.orientation.w };
+                const Vec3 origin = { aim.pose.position.x, aim.pose.position.y, aim.pose.position.z };
+                const Vec3 dir = Rotate(aq, { 0.0f, 0.0f, -1.0f });
+                float dist = 0.0f;
+                onPanel = RayHitsPanel(origin, dir, FlatQuadPose(), kQuadWidth, FlatQuadHeight(), &u, &v, &dist);
+                if (!onPanel) {
+                    dist = kBeamMissLength;
+                }
+                const Vec3 to = { origin.x + dir.x * dist, origin.y + dir.y * dist, origin.z + dir.z * dist };
+                const Vec3 eye = { head.pose.position.x, head.pose.position.y, head.pose.position.z };
+                in.beamValid = BeamPose(origin, to, eye, &in.beamPose, &in.beamLength);
+            }
+        }
+        in.triggerDown = gdx_vr::TriggerClick(in.triggerDown, value(in.pointerTrigger));
+        const bool aDown = boolean(in.a);
+        const bool click = onPanel && (in.triggerDown || aDown);
+        if (click && !in.pointerDown) {
+            sfvr_haptic_event(&in.haptics, SFVR_HAND_RIGHT, SFVR_HAPTIC_UI_CLICK);
+        }
+        in.pointerDown = click;
+        in.pointerOnPanel = onPanel;
+        in.pointerU = u;
+        in.pointerV = v;
+        nav.pointer_active = onPanel ? 1 : 0;
+        nav.pointer_x = u;
+        nav.pointer_y = v;
+        nav.pointer_down = click ? 1 : 0;
+        nav.wheel_y = (onPanel && std::fabs(cy) > 0.2f) ? cy * 0.15f : 0.0f;
+        nav.confirm = !onPanel && aDown;
+        // Back out: the physical B (in a race it toggles the camera) or X (N64 B, the game's back).
+        nav.cancel = boolean(in.cameraMode) || boolean(in.b);
         nav.back = nowSec < in.backPulseUntil;
         nav.l1 = boolean(in.l);
         nav.r1 = boolean(in.r);
@@ -922,6 +1012,10 @@ void SyncInput() {
         for (bool& d : in.stickDir) {
             d = false;
         }
+        in.beamValid = false;
+        in.pointerDown = false;
+        in.pointerOnPanel = false;
+        in.triggerDown = false;
         gdx_imgui_nav_set_external(nullptr);
     }
     in.pad.buttons = buttons;
@@ -1129,6 +1223,9 @@ bool CreateEverything() {
     }
     s.gl.genFramebuffers(1, &s.drawFbo);
     s.gl.genFramebuffers(1, &s.readFbo);
+    if (CreateSwapchain(s.beam, 8, 8, "xrCreateSwapchain(pointer beam)")) {
+        FillSwapchain(s.beam, 0.55f, 0.85f, 1.0f, 0.9f);
+    }
     if (!CreateInput()) {
         gdx_port_logf("[openxr] controller actions unavailable; relying on SDL/Steam Input\n");
     }
@@ -1439,6 +1536,7 @@ bool EnsurePending() {
     if (!Check(xrWaitFrame(s.session, &fwi, &fs), "xrWaitFrame")) {
         return false;
     }
+    s.lastDisplayTime = fs.predictedDisplayTime;
     UpdateRecenter(fs.predictedDisplayTime);
     const FramePlan plan = s.scheduler.PlanFrame((double)fs.predictedDisplayTime * 1e-9);
     if (plan.rebased) {
@@ -1560,30 +1658,92 @@ void CopyIntoSwapchain(Swapchain& sc, GLuint sourceTexture, int srcW, int srcH) 
     }
 }
 
+// Fill every image of a static-content swapchain with one colour (the pointer beam). Each image is
+// acquired, cleared and released once; a layer keeps showing the last released image.
+void FillSwapchain(Swapchain& sc, float r, float g, float b, float a) {
+    State& s = S();
+    for (size_t i = 0; i < sc.images.size(); i++) {
+        uint32_t index = 0;
+        XrSwapchainImageAcquireInfo ai{ XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO };
+        if (!Check(xrAcquireSwapchainImage(sc.handle, &ai, &index), "xrAcquireSwapchainImage(fill)")) {
+            return;
+        }
+        XrSwapchainImageWaitInfo wi{ XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO };
+        wi.timeout = XR_INFINITE_DURATION;
+        if (!Check(xrWaitSwapchainImage(sc.handle, &wi), "xrWaitSwapchainImage(fill)")) {
+            return;
+        }
+        const GlStateSave saved = SaveGlState();
+        s.gl.bindFramebuffer(GL_DRAW_FRAMEBUFFER, s.drawFbo);
+        s.gl.framebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, sc.images[index].image, 0);
+        GLfloat prev[4];
+        glGetFloatv(GL_COLOR_CLEAR_VALUE, prev);
+        glClearColor(r, g, b, a);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glClearColor(prev[0], prev[1], prev[2], prev[3]);
+        s.gl.framebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 0, 0);
+        RestoreGlState(saved);
+        XrSwapchainImageReleaseInfo ri{ XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
+        if (Check(xrReleaseSwapchainImage(sc.handle, &ri), "xrReleaseSwapchainImage(fill)")) {
+            sc.hasImage = true;
+        }
+    }
+}
+
 // --- Flat mode ---------------------------------------------------------------------------------
+
+// The flat quad (menus, flat game screens): kQuadDistance ahead of where the viewer faced at the
+// last recentre, in LOCAL. Yaw and horizontal position follow every recentre; the height is the
+// height anchor, so it is re-anchored together with the eye poses (View hold 3 s, focus gain) and
+// never left at a stale value. Before the first recentre lands the anchor is 0 (the LOCAL origin is
+// at eye height). The menu pointer hit-tests this same pose.
+Pose FlatQuadPose() {
+    const State& s = S();
+    const Vec3 ahead = Rotate(s.recenterYaw, { 0.0f, 0.0f, -kQuadDistance });
+    return { s.recenterYaw, { s.recenterPos.x + ahead.x, s.heightAnchor, s.recenterPos.z + ahead.z } };
+}
+
+float FlatQuadHeight() {
+    const State& s = S();
+    return s.quad.width > 0 ? kQuadWidth * (float)s.quad.height / (float)s.quad.width : 0.0f;
+}
 
 void EndPendingWithQuad() {
     State& s = S();
     XrCompositionLayerQuad quad{ XR_TYPE_COMPOSITION_LAYER_QUAD };
-    const XrCompositionLayerBaseHeader* layers[1];
+    XrCompositionLayerQuad beam{ XR_TYPE_COMPOSITION_LAYER_QUAD };
+    const XrCompositionLayerBaseHeader* layers[2];
     uint32_t layerCount = 0;
     if (s.pending.state.shouldRender && s.quad.hasImage) {
+        const Pose pose = FlatQuadPose();
         quad.space = s.localSpace;
         quad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
         quad.subImage.swapchain = s.quad.handle;
         quad.subImage.imageRect.offset = { 0, 0 };
         quad.subImage.imageRect.extent = { s.quad.width, s.quad.height };
-        // kQuadDistance ahead of where the viewer faced at the last recentre. Yaw and horizontal
-        // position follow every recentre; the height is the height anchor, so it is re-anchored
-        // together with the eye poses (View hold 3 s, focus gain) and never left at a stale value.
-        // Before the first recentre lands the anchor is 0 (the LOCAL origin is at eye height).
-        const Vec3 ahead = Rotate(s.recenterYaw, { 0.0f, 0.0f, -kQuadDistance });
-        quad.pose.orientation = { s.recenterYaw.x, s.recenterYaw.y, s.recenterYaw.z, s.recenterYaw.w };
-        quad.pose.position = { s.recenterPos.x + ahead.x, s.heightAnchor, s.recenterPos.z + ahead.z };
+        quad.pose.orientation = { pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w };
+        quad.pose.position = { pose.position.x, pose.position.y, pose.position.z };
         quad.size.width = kQuadWidth;
-        quad.size.height = kQuadWidth * (float)s.quad.height / (float)s.quad.width;
-        layers[0] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&quad);
-        layerCount = 1;
+        quad.size.height = FlatQuadHeight();
+        layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&quad);
+    }
+    // The menu pointer's laser: a thin solid quad from the hand to the hit (or 1.5 m out), turned
+    // toward the head. Composited after the panel, so it draws over it up to the hit point.
+    const XrInput& in = s.input;
+    if (s.pending.state.shouldRender && s.menuOpen && in.beamValid && s.beam.hasImage) {
+        beam.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT |
+                          XR_COMPOSITION_LAYER_UNPREMULTIPLIED_ALPHA_BIT;
+        beam.space = s.localSpace;
+        beam.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+        beam.subImage.swapchain = s.beam.handle;
+        beam.subImage.imageRect.offset = { 0, 0 };
+        beam.subImage.imageRect.extent = { s.beam.width, s.beam.height };
+        const Pose& bp = in.beamPose;
+        beam.pose.orientation = { bp.orientation.x, bp.orientation.y, bp.orientation.z, bp.orientation.w };
+        beam.pose.position = { bp.position.x, bp.position.y, bp.position.z };
+        beam.size.width = kBeamWidth;
+        beam.size.height = in.beamLength;
+        layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&beam);
     }
     EndPending(layers, layerCount);
 }
@@ -1961,6 +2121,14 @@ bool BeginHostIteration() {
     }
     if (s.phase != Phase::Running) {
         return true;
+    }
+    // libultraship saves the menu's visibility (gOpenMenuBar), so quitting with it open reopened it
+    // over the next VR launch. In the headset it opens only on the Menu + View chord.
+    if (!s.menuLaunchChecked) {
+        s.menuLaunchChecked = true;
+        if (GdxMenuIsVisible() && GdxMenuShow(false, nullptr)) {
+            gdx_port_logf("[vr] menu closed at VR launch (it was saved open)\n");
+        }
     }
     SyncMenuState("menu visibility changed");
     // A CVar edit in the menu (Cockpit view) takes effect now, as a Level recentre like the toggle.

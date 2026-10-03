@@ -106,6 +106,10 @@ float CockpitRoofHeight(int machine, float forward) {
     return h[kRoofForwardCount - 1];
 }
 
+bool TriggerClick(bool wasDown, float value) {
+    return wasDown ? value > 0.45f : value > 0.6f;
+}
+
 float PickRefreshRate(const float* rates, unsigned count, float hz) {
     float chosen = 0.0f;
     for (unsigned i = 0; i < count; i++) {

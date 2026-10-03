@@ -77,6 +77,18 @@ Vec3 Rotate(const Quat& q, const Vec3& v);
 // A vector given in the anchor's local (XR) axes, expressed in world space.
 Vec3 AnchorToWorld(const Anchor& anchor, const Vec3& local);
 
+// Menu pointer: where a ray (unit `dir`) meets a flat panel posed like an XrCompositionLayerQuad
+// (centred on panel.position, facing its local +z, `width` x `height`). Returns true only for a hit
+// on the panel's front face inside its rectangle; u runs 0..1 left to right and v 0..1 top to
+// bottom (image order), and *distance is the ray length to the hit.
+bool RayHitsPanel(const Vec3& origin, const Vec3& dir, const Pose& panel, float width, float height, float* u,
+                  float* v, float* distance);
+
+// Pose for a thin quad drawn as a beam from `from` to `to`: centred between them, its local +y
+// along the beam and its face (+z) turned toward `viewer` as far as the beam allows. *length is the
+// beam length (the quad's height). Returns false when from == to.
+bool BeamPose(const Vec3& from, const Vec3& to, const Vec3& viewer, Pose* out, float* length);
+
 } // namespace gdx_vr
 
 #endif // GDX_VR_MATH_H
