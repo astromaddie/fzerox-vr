@@ -390,16 +390,21 @@ edits all of these except `Stereo` and `WideCull`.
     clears canopies and fins ahead). `gdx_vr_read_player_vehicle` reports the stock model (super
     machines included); edited custom machines and model packs use a 15-unit fallback roof. The
     first cockpit (`NoseForward`/`NoseUp` 8, 6) put the eye inside nearly every body.
-  - Near plane: the game camera's own (16). Fog is computed from z/w (`interpreter.cpp`), so the
-    earlier 2-unit near re-mapped every distance and fogged the whole scene, and cost 8x depth
-    precision at range (distant backdrop buildings flickered). Geometry nearer than 16 (the roof
-    under the eye) is not clipped because the GL backend enables `GL_DEPTH_CLAMP`; it draws at the
-    near depth.
+  - Near plane 2 units, with fog remapped. The roof under the eye is inside the game camera's
+    near plane (16). Using 16 with `GL_DEPTH_CLAMP` (d2daa50) kept the near hull on screen, but all
+    of it shared one clamped depth, so the hull's inner faces drew over the roof ("the camera clips
+    inside the ship", 2026-10-03 wear). The RSP takes fog from z/w, which a different near re-maps
+    (the whole scene fogged), so the bridge computes `Interpreter::SetVrFogRemap` per eye: both
+    projections give z/w = A - B/distance, and fog reads `bias + k*(z/w)` with k = B_game/B_eye,
+    bias = A_game - k*A_eye. That is exactly the game camera's fog at every distance.
+  - Open: distant backdrop buildings flickered in cockpit view (seen with near 2). Suspect depth
+    precision (24-bit depth, 8x worse than at near 16) or the interpreter's far-plane rejection
+    (`z > w`). Not yet diagnosed.
   - The pose is snapshotted per tick with the camera poses and interpolated at the frame's t, so it
     stays phase-locked to the rendered machine.
   - Verified unattended (before the tilt and near-plane change): a forced-render cockpit eye dump in
     the attract demo shows the followed machine's canopy and nose below the horizon in both eyes.
-    The tilt, the new near plane and the new defaults are build-verified only; not worn.
+    The tilt, the fog remap and the new defaults are build-verified only.
 - No desktop mirror while in stereo, HUD always head-locked.
 - The flat quad is world-locked 2 m ahead of the last recentre, at the height anchor (see below).
 

@@ -2957,6 +2957,10 @@ static float gGdxVrVehPrev[12];
 static bool gGdxVrVehCurOk = false;
 static bool gGdxVrVehPrevOk = false;
 static int gGdxVrVehMachine = -1; // this tick's model, not interpolated (it changes only between races)
+// Fog remap for the eye being replayed (Interpreter::SetVrFogRemap): identity unless the eye's
+// projection uses a different near plane from the game camera (the cockpit view).
+static float gGdxVrEyeFogScale = 1.0f;
+static float gGdxVrEyeFogBias = 0.0f;
 #endif
 
 static inline bool GdxVrStereoTick() {
@@ -3491,11 +3495,23 @@ class N64DisplayListAdapter {
                                    v[1] + fwd[1] * roofForward + up[1] * roofUp,
                                    v[2] + fwd[2] * roofForward + up[2] * roofUp };
             const float at[3] = { eye[0] + fwd[0], eye[1] + fwd[1], eye[2] + fwd[2] };
-            // The game camera's own near plane: fog is computed from z/w (interpreter.cpp), so a
-            // different near re-maps every distance (the whole scene fogged), and a smaller one costs
-            // depth precision far away (distant scenery z-fights). The roof nearer than that is not
-            // clipped: the GL backend enables GL_DEPTH_CLAMP, so it draws at the near depth.
-            if (!gdx_vr::BuildActiveEyeProjView(eye, at, up, pose.nearZ, pose.farZ, pv, false)) {
+            // The roof under the eye is a few tenths of a metre away, inside the game camera's near
+            // plane (16 units), so the cockpit uses its own. The game's own near is not an option:
+            // depth clamp keeps nearer geometry on screen, but all of it then shares one depth and
+            // the hull's inner faces draw over the roof. A different near re-maps the z/w the RSP
+            // takes fog from, so remap fog back to the game camera's curve: for both projections
+            // z/w = A - B/distance, A = (f+n)/(f-n), B = 2fn/(f-n).
+            const float nearZ = (pose.nearZ > 2.0f) ? 2.0f : pose.nearZ;
+            const float farZ = pose.farZ;
+            if (farZ > pose.nearZ && pose.nearZ > 0.0f && nearZ > 0.0f) {
+                const float aGame = (farZ + pose.nearZ) / (farZ - pose.nearZ);
+                const float bGame = 2.0f * farZ * pose.nearZ / (farZ - pose.nearZ);
+                const float aEye = (farZ + nearZ) / (farZ - nearZ);
+                const float bEye = 2.0f * farZ * nearZ / (farZ - nearZ);
+                gGdxVrEyeFogScale = bGame / bEye;
+                gGdxVrEyeFogBias = aGame - gGdxVrEyeFogScale * aEye;
+            }
+            if (!gdx_vr::BuildActiveEyeProjView(eye, at, up, nearZ, farZ, pv, false)) {
                 return false;
             }
         } else {
@@ -9097,6 +9113,8 @@ extern "C" void gdx_gfx_run(void* dl, size_t dl_size, GdxTaskUcode taskUcode) {
         cb.user = &eyeCtx;
         cb.renderEye = [](void* user, int /*eye*/, float t, int width, int height) -> unsigned {
             EyeCtx* c = static_cast<EyeCtx*>(user);
+            gGdxVrEyeFogScale = 1.0f; // the camera refill below sets a remap if this eye needs one
+            gGdxVrEyeFogBias = 0.0f;
             c->adapter->GdxP0RefillScratch(t);
             c->adapter->GdxVpRefillScratch(t);
             c->adapter->GdxVtxRefillScratch(t);
@@ -9115,6 +9133,7 @@ extern "C" void gdx_gfx_run(void* dl, size_t dl_size, GdxTaskUcode taskUcode) {
             c->interp->SetVrEyeTarget(static_cast<uint32_t>(width), static_cast<uint32_t>(height));
             c->interp->SetVrPass(Fast::Interpreter::VrPass::WorldOnly);
             c->interp->SetVrEyeTanHalfY(gdx_vr::ActiveEyeTanHalfY());
+            c->interp->SetVrFogRemap(gGdxVrEyeFogScale, gGdxVrEyeFogBias);
             gdx_perf_sub_begin(GDX_PERF_SUB_IRUN);
             c->interp->StartFrame();
             c->interp->Run(reinterpret_cast<Gfx*>(c->commands), {});
@@ -9130,6 +9149,7 @@ extern "C" void gdx_gfx_run(void* dl, size_t dl_size, GdxTaskUcode taskUcode) {
             }
             c->interp->SetVrEyeTarget(static_cast<uint32_t>(width), static_cast<uint32_t>(height));
             c->interp->SetVrPass(Fast::Interpreter::VrPass::HudOnly);
+            c->interp->SetVrFogRemap(1.0f, 0.0f);
             // Rendered over black and over white; the presenter recovers coverage from the pair.
             void (*savedHook)(Fast::Interpreter*) = Fast::Interpreter::sPortAfterClearHook;
             if (whiteBackground != 0) {
