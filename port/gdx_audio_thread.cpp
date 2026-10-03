@@ -273,6 +273,12 @@ extern "C" void gdx_audio_thread_start(int argc, char** argv) {
     // and ~std::thread() on a joinable thread calls std::terminate(). [basic.start.term] fixes it:
     // sAudioThread's construction is sequenced before this registration, so the handler runs
     // BEFORE ~sAudioThread. Idempotent with main()'s explicit stop, which then no-ops.
+    //
+    // It only protects sAudioThread itself. Statics this thread creates later (libultraship
+    // os.cpp's sample buffers, the perf state) are registered after this and so are destroyed
+    // BEFORE the join, while the thread is still writing to them. main() therefore turns
+    // SIGTERM/SIGINT into an orderly window close (gdx_shutdown_signal.h); this stays as the
+    // backstop for any other exit() (SIGQUIT still goes through libultraship).
     static bool sAtexitRegistered = false;
     if (!sAtexitRegistered) {
         sAtexitRegistered = true;

@@ -42,6 +42,7 @@
 #include "gdx_dev_gates.h"
 #include "gdx_extract_launch.h"
 #include "gdx_audio_thread.h"
+#include "gdx_shutdown_signal.h"
 #include "gdx_frame_pacer.h"
 #include "gdx_workshop.h"
 #include "n64_gfx_bridge.h"
@@ -1206,6 +1207,11 @@ int main(int argc, char** argv) {
         firstBoot.status = gdx::FirstBootStatus::SetupComplete;
     }
 
+    // From here on exit() is unsafe: the audio thread outlives every static it creates, so a
+    // SIGTERM/SIGINT has to come back through the frame loop and the normal teardown below instead
+    // of libultraship's exit(1) from inside the handler (see gdx_shutdown_signal.h).
+    gdx_shutdown_signal_install();
+
     // Safe this early: the thread internally waits for gAudioContextInitialized (set once decomp's
     // Audio_Init runs, well after bootproc() below) before producing anything.
     logStep("gdx_audio_thread_start()");
@@ -1381,6 +1387,15 @@ int main(int argc, char** argv) {
         // and the window manager crashes.
         w->HandleEvents();
         gdx::PerfPhaseEnd(gdx::PerfEvents);
+        {
+            static bool sSignalSeen = false;
+            const int sig = gdx_shutdown_signal_requested();
+            if (sig != 0 && !sSignalSeen) {
+                sSignalSeen = true;
+                gdx_port_logf("[G-Diffuser] shutdown signal %d: closing the window for an orderly exit\n", sig);
+                w->Close();
+            }
+        }
         gdx::PerfPhaseBegin(gdx::PerfInput);
         gdx_controller_poll();
         // Must publish the editor fixed-aspect state before this frame's gfx task runs below:

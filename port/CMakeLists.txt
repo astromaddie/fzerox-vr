@@ -325,6 +325,8 @@ add_executable(G-Diffuser
     gdx_perf.cpp
     gdx_dev_gates.c            # dependency-free C: CVar entry points arrive as function pointers
                                 # from main.cpp, so the standalone test targets compile it unchanged
+    gdx_shutdown_signal.c      # SIGTERM/SIGINT -> orderly window close instead of exit() from the
+                                # handler; dependency-free C, also compiled by gdx_vr_settings_tests
     gdx_imgui_nav.cpp
     gdx_workshop.cpp
     gdx_audio_seq_packs.cpp      # stage-2 audio modding; hooks live in decomp/src/audio/*/lib/load.c
@@ -636,7 +638,7 @@ if(GDX_OPENXR)
     unset(BUILD_WITH_WAYLAND_HEADERS)
     unset(CMAKE_POLICY_DEFAULT_CMP0077)
 
-    target_sources(G-Diffuser PRIVATE vr/gdx_openxr.cpp vr/gdx_vr_scheduler.cpp vr/gdx_vr_math.cpp vr/gdx_vr_system.cpp)
+    target_sources(G-Diffuser PRIVATE vr/gdx_openxr.cpp vr/gdx_vr_settings.cpp vr/gdx_vr_scheduler.cpp vr/gdx_vr_math.cpp vr/gdx_vr_system.cpp)
     target_compile_definitions(G-Diffuser PRIVATE GDX_OPENXR=1)
     target_link_libraries(G-Diffuser PRIVATE OpenXR::openxr_loader OpenXR::headers gdx_sfvr)
     message(STATUS "G-Diffuser: GDX_OPENXR=ON — OpenXR output mode compiled in (OpenXR-SDK 1.1.63, static loader)")
@@ -871,6 +873,21 @@ if(TARGET libultraship)
         "${CMAKE_SOURCE_DIR}/libultraship/include"
     )
     target_link_libraries(resource_smoketest PRIVATE libultraship)
+
+    # VR settings start-up path against libultraship's real Config/CVar code (first launch, keys
+    # missing after a rename, wrong-typed values), then a SIGTERM with a thread still producing
+    # audio. No window, no OpenXR, no game data; most useful built with -fsanitize=address.
+    add_executable(gdx_vr_settings_tests
+        tests/gdx_vr_settings_tests.cpp
+        vr/gdx_vr_settings.cpp
+        vr/gdx_vr_system.cpp
+        gdx_dev_gates.c
+        gdx_shutdown_signal.c)
+    target_include_directories(gdx_vr_settings_tests PRIVATE
+        "${CMAKE_SOURCE_DIR}/libultraship/include"
+    )
+    target_link_libraries(gdx_vr_settings_tests PRIVATE libultraship gdx_sfvr)
+    target_compile_features(gdx_vr_settings_tests PRIVATE cxx_std_20)
 endif()
 
 # LLE audio boot test: proves the cxd4 interpreter boots and executes the real aspMain microcode
@@ -1009,6 +1026,7 @@ if(GDX_BUILD_JP)
         gdx_fps_overlay.cpp
         gdx_perf.cpp
         gdx_dev_gates.c
+        gdx_shutdown_signal.c
         gdx_imgui_nav.cpp
         gdx_workshop.cpp
         gdx_audio_seq_packs.cpp

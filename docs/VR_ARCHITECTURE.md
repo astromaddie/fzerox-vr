@@ -268,6 +268,7 @@ release user, independent of VR, and is worth upstreaming on its own.
 | `port/third_party/sfvr/` | The shared cross-port VR library (C99), vendored by copying from `~/code/sfvr`; `VERSION` holds the pinned commit. Never edited here. Built as `gdx_sfvr`. Used for the View button, the haptic queue and the `[vr-perf]` line. |
 | `port/vr/gdx_vr_math.*` | Per-eye projection·view in the game's conventions; asymmetric XR FOV; s15.16 fit (uniform scale, NDC-invariant). `gdx_vr_math_tests` (34 checks) compares against a transcription of `Matrix_SetLookAt`/`Matrix_SetFrustrum`/`Camera_CalculateProjectionViewMtx`. |
 | `port/vr/gdx_openxr.*` | Instance/session/swapchains (GL, Xlib/GLX binding), session states, the shared frame protocol, flat quad, stereo projection layer, head-locked HUD quad, OpenXR controller actions, diagnostics. |
+| `port/vr/gdx_vr_settings.*` | Loads, repairs and saves the `gEnhancements.VR.*` CVars at session start (missing keys get defaults, wrong-typed values are converted, strings are reset). `gdx_vr_settings_tests` runs it against libultraship's real config code, then checks the SIGTERM exit path. |
 | `libultraship` `Interpreter` | `gfx_pre_present_hook`; `SetVrEyeTarget` (offscreen eye-sized target, no MSAA/post shader/hor+ squash, overscan border scissors removed); `VrPass` world/HUD split at the HUD marker; texture rectangles dropped from world passes. |
 | `port/n64_gfx_bridge.cpp` | VR branch of the replay: per XR frame, per eye, refill scratch at t, replace camera 0's projection·view with the eye's (`GdxVrEyeRebuildSlot`), rebuild the backdrop for the eye, replay world-only; HUD-only replay once per tick. |
 | decomp (PORT-gated) | `race.c`: HUD split marker before `Menus_Draw` (emitted only in VR). `background.c`: per-eye backdrop vertex rebuild on copies of camera/background, with save/restore of the pool vertices. `course.c` / `racer.c`: distance-only culling while `gGdxVrWideCull`. |
@@ -333,14 +334,24 @@ edits all of these except `Stereo` and `WideCull`.
 - Track and machines behind the game camera present (distance culling); no vertex-buffer overflow.
 
 ### Known limitations / next
-- **Open: heap corruption after a startup settings save.** When `InitSettings` finds a VR key missing
-  from the config, it registers defaults and calls `CVarSave()`. In unattended runs on the Frame
-  (2026-10-03, 75 s, SIGTERM at the end), the two runs that saved at startup aborted at exit with
-  glibc `corrupted double-linked list` and hung. The six that did not save exited cleanly. Not yet
-  reproduced on a build without the RoofForward/RoofClearance rename by deleting a key; the rename
-  makes every existing config hit this path once (the devkit install's config was pre-seeded with the
-  new keys to avoid it). Suspect the startup `CVarSave` or the teardown
-  that follows it.
+- Fixed (2026-10-03): heap corruption at exit after a SIGTERM. The unattended Frame runs that saved
+  settings at startup aborted at exit with glibc `corrupted double-linked list` and hung. The save
+  turned out not to be the cause. libultraship's CrashHandler answers SIGTERM and SIGINT with
+  `exit(1)` from inside the signal handler, so static destructors ran while the dedicated audio
+  thread was still producing. That thread's own statics (the sample buffers in libultraship's
+  `osAiSetNextBuffer`, the `gdx_perf` state) are created after its atexit join is registered, so
+  they are destroyed first and the thread goes on copying 2240-byte buffers into freed memory. A
+  later `free()` trips over the damage, and the crash handler then hangs trying to show a message
+  box. On the host (arm64 container, Xvfb, `--vr` with no runtime) every SIGTERM'd run of the old
+  build hung like this, 8 of 8, whether it saved or not; gdb shows `exit()` freeing the buffer while
+  the audio thread is mid-tick. Now `port/gdx_shutdown_signal.c` turns the first SIGTERM or SIGINT
+  into a window close, so the normal teardown (VR session, audio thread join) runs before `main()`
+  returns; 8 of 8 runs of the fixed build exit 0. A second signal still kills the process outright.
+  SIGQUIT still goes through libultraship. `gdx_vr_settings_tests` covers the first-launch settings
+  path and this exit (set `GDX_VR_SETTINGS_TESTS_OLD_SIGTERM=1` to see the old behaviour under
+  ASan). Why only the two saving runs failed on the Frame is still unexplained: nothing in
+  `CVarSave` registers an exit handler, so it was probably chance or heap layout. Not yet re-run on
+  the Frame.
 - Not yet seen through the headset: world scale, comfort (the chase camera's roll in pipes and loops
   is applied to the viewer's reference frame), HUD size/distance, brightness.
 - Screen-space sprites the game draws in the world part of the list are now handled per kind
