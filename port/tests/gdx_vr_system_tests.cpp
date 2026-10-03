@@ -232,7 +232,7 @@ static void CaseSettings() {
     check("switch above range clamps to 1", SanitizeSetting(kSetHorizonLock, 7.0) == 1.0);
     check("switch below range clamps to 0", SanitizeSetting(kSetStereo, -3.0) == 0.0);
     check("switch rounds to nearest", SanitizeSetting(kSetWideCull, 0.4) == 0.0 && SanitizeSetting(kSetWideCull, 0.6) == 1.0);
-    check("zero world scale clamps up", SanitizeSetting(kSetWorldScale, 0.0) == 2.0);
+    check("zero world scale clamps up to 1", SanitizeSetting(kSetWorldScale, 0.0) == 1.0);
     check("huge world scale clamps down", SanitizeSetting(kSetWorldScale, 1e9) == 50.0);
     check("HUD height clamps", SanitizeSetting(kSetHudHeight, 0.01) == 0.3 && SanitizeSetting(kSetHudHeight, 99.0) == 3.0);
     check("HUD aspect clamps", std::fabs(SanitizeSetting(kSetHudAspect, 0.5) - 4.0 / 3.0) < 1e-12 &&

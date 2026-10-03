@@ -37,7 +37,6 @@
 #include "gdx_camera_pose.h"
 #ifdef GDX_OPENXR
 #include "vr/gdx_openxr.h"
-#include "vr/gdx_vr_system.h" // kGameUnitsPerMeter
 #endif
 extern "C" {
 #include "mio0.h"
@@ -3516,8 +3515,7 @@ class N64DisplayListAdapter {
                 gGdxVrEyeFogBias = aGame - gGdxVrEyeFogScale * aEye;
             }
             gGdxVrEyeClipNotReject = true;
-            // Life-size: the world-scale setting is a chase-view preference.
-            if (!gdx_vr::BuildActiveEyeProjView(eye, at, up, nearZ, farZ, pv, false, gdx_vr::kGameUnitsPerMeter)) {
+            if (!gdx_vr::BuildActiveEyeProjView(eye, at, up, nearZ, farZ, pv, false, 0.0f)) {
                 return false;
             }
         } else {

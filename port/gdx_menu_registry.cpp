@@ -1128,19 +1128,18 @@ void GdxMenu::RegisterMenu() {
         AddWidget("VR", "VR Settings", SECTION_COLUMN_1,
                   WidgetInfo{ .name = "View", .type = GdxUI::WIDGET_SEPARATOR_TEXT });
         AddWidget("VR", "VR Settings", SECTION_COLUMN_1,
-                  WidgetInfo{ .name = "Chase world scale (units per metre)", .cVar = "gEnhancements.VR.WorldScale",
+                  WidgetInfo{ .name = "World scale (units per metre)", .cVar = "gEnhancements.VR.WorldScale",
                               .type = GdxUI::WIDGET_CVAR_SLIDER_FLOAT }
                       .Options(UIWidgets::FloatSliderOptions{ .flags = ImGuiSliderFlags_AlwaysClamp }
                                    .Format("%.1f")
-                                   .Min(2.0f)
+                                   .Min(1.0f)
                                    .Max(50.0f)
                                    .Step(0.5f)
                                    .DefaultValue(10.0f)
                                    .ShowButtons(false)
                                    .LabelPosition(UIWidgets::LabelPositions::Near)
-                                   .Tooltip("Chase view: game units per real metre. 10 is the game's own scale;\n"
-                                            "lower makes the world feel bigger, higher makes it feel smaller.\n"
-                                            "The cockpit view is always life-size (10)."))
+                                   .Tooltip("Game units per real metre, for both views. Lower makes the world\n"
+                                            "and your machine feel bigger, higher makes them feel smaller."))
                       .SearchTerms("scale size giant miniature"));
         AddWidget("VR", "VR Settings", SECTION_COLUMN_1,
                   WidgetInfo{ .name = "HUD height (metres)", .cVar = "gEnhancements.VR.HudHeight",
