@@ -291,7 +291,8 @@ Measured on the Frame (72 Hz runtime default, headset in standby, forced renderi
 | Variable | Effect |
 | --- | --- |
 | `GDX_VR=1` | Same as `--vr`. |
-| `GDX_VR_FORCE_RENDER=1` | Render eyes even when the runtime says not to (headset in standby); synthetic straight-ahead pose if none is tracked. |
+| `GDX_VR_FORCE_RENDER=1` | Render eyes and flat frames even when the runtime says not to (headset in standby); synthetic straight-ahead pose if none is tracked. |
+| `GDX_VR_DUMP_FLAT_EVERY=<k>`, `GDX_VR_DUMP_FLAT_UNTIL=<n>` (default 600) | Write the window back buffer the flat quad shows (`vr-flat-<i>.bmp`) every k-th flat tick up to tick n, shown or not. |
 | `GDX_VR_DUMP_FRAME=<n>` | Write both eyes (`vr-eye<e>-<n>.bmp`) and the HUD rendered over black and over white (`vr-hud-black.bmp`, `vr-hud-white.bmp`; the two inputs of the alpha-recovery shader) of stereo frame n; each dump logs its % fully transparent pixels. |
 | `GDX_VR_DIAG_YAW=<deg>` | Turn the tracked head about LOCAL +y, to capture head turns unattended. |
 | `GDX_VR_DUMP_ON_SPRITE=1` | Dump the eyes of the first stereo frame that places a world sprite (`vr-sprite-eye<e>.bmp`) and the HUD of the first tick that draws a HUD sprite (`vr-sprite-hud.bmp`). |
@@ -443,6 +444,12 @@ edits all of these except `Stereo` and `WideCull`.
     The tilt, the fog remap and the new defaults are build-verified only.
 - No desktop mirror while in stereo, HUD always head-locked.
 - The flat quad is world-locked 2 m ahead of the last recentre, at the height anchor (see below).
+  Flat frames also submit a black projection layer under it. With the quad alone, a corrupted,
+  enlarged and mirrored copy of the 64DD splash showed behind the panel (2026-10-04 wear), while
+  the image copied into the quad was clean (`GDX_VR_DUMP_FLAT_EVERY`). Most likely SteamVR kept
+  drawing the Steam launch's desktop window on a theater screen until the app submitted a
+  projection layer. The backdrop is accepted (full unattended run, 72 fps, no XR errors); not yet
+  worn.
 
 ### System layer
 The controls that are the same in every Steam Frame port (cross-port standard, section 1). Nothing

@@ -1603,34 +1603,44 @@ void CopyIntoSwapchain(Swapchain& sc, GLuint sourceTexture, int srcW, int srcH) 
     }
 }
 
-// Fill every image of a static-content swapchain with one colour (the pointer beam). Each image is
-// acquired, cleared and released once; a layer keeps showing the last released image.
-void FillSwapchain(Swapchain& sc, float r, float g, float b, float a) {
+// Acquire the next image of `sc`, clear it to one colour and release it. Returns false (and
+// leaves the swapchain as it was) when acquiring fails.
+bool ClearSwapchainImage(Swapchain& sc, float r, float g, float b, float a) {
     State& s = S();
+    uint32_t index = 0;
+    XrSwapchainImageAcquireInfo ai{ XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO };
+    if (!Check(xrAcquireSwapchainImage(sc.handle, &ai, &index), "xrAcquireSwapchainImage(clear)")) {
+        return false;
+    }
+    XrSwapchainImageWaitInfo wi{ XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO };
+    wi.timeout = XR_INFINITE_DURATION;
+    if (!Check(xrWaitSwapchainImage(sc.handle, &wi), "xrWaitSwapchainImage(clear)")) {
+        return false;
+    }
+    const GlStateSave saved = SaveGlState();
+    s.gl.bindFramebuffer(GL_DRAW_FRAMEBUFFER, s.drawFbo);
+    s.gl.framebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, sc.images[index].image, 0);
+    GLfloat prev[4];
+    glGetFloatv(GL_COLOR_CLEAR_VALUE, prev);
+    glClearColor(r, g, b, a);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glClearColor(prev[0], prev[1], prev[2], prev[3]);
+    s.gl.framebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 0, 0);
+    RestoreGlState(saved);
+    XrSwapchainImageReleaseInfo ri{ XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
+    if (!Check(xrReleaseSwapchainImage(sc.handle, &ri), "xrReleaseSwapchainImage(clear)")) {
+        return false;
+    }
+    sc.hasImage = true;
+    return true;
+}
+
+// Fill every image of a static-content swapchain with one colour (the pointer beam). A layer keeps
+// showing the last released image.
+void FillSwapchain(Swapchain& sc, float r, float g, float b, float a) {
     for (size_t i = 0; i < sc.images.size(); i++) {
-        uint32_t index = 0;
-        XrSwapchainImageAcquireInfo ai{ XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO };
-        if (!Check(xrAcquireSwapchainImage(sc.handle, &ai, &index), "xrAcquireSwapchainImage(fill)")) {
+        if (!ClearSwapchainImage(sc, r, g, b, a)) {
             return;
-        }
-        XrSwapchainImageWaitInfo wi{ XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO };
-        wi.timeout = XR_INFINITE_DURATION;
-        if (!Check(xrWaitSwapchainImage(sc.handle, &wi), "xrWaitSwapchainImage(fill)")) {
-            return;
-        }
-        const GlStateSave saved = SaveGlState();
-        s.gl.bindFramebuffer(GL_DRAW_FRAMEBUFFER, s.drawFbo);
-        s.gl.framebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, sc.images[index].image, 0);
-        GLfloat prev[4];
-        glGetFloatv(GL_COLOR_CLEAR_VALUE, prev);
-        glClearColor(r, g, b, a);
-        glClear(GL_COLOR_BUFFER_BIT);
-        glClearColor(prev[0], prev[1], prev[2], prev[3]);
-        s.gl.framebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 0, 0);
-        RestoreGlState(saved);
-        XrSwapchainImageReleaseInfo ri{ XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
-        if (Check(xrReleaseSwapchainImage(sc.handle, &ri), "xrReleaseSwapchainImage(fill)")) {
-            sc.hasImage = true;
         }
     }
 }
@@ -1655,11 +1665,45 @@ float FlatQuadHeight() {
 
 void EndPendingWithQuad() {
     State& s = S();
+    XrCompositionLayerProjection backdrop{ XR_TYPE_COMPOSITION_LAYER_PROJECTION };
+    XrCompositionLayerProjectionView backdropViews[2] = { { XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW },
+                                                          { XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW } };
     XrCompositionLayerQuad quad{ XR_TYPE_COMPOSITION_LAYER_QUAD };
     XrCompositionLayerQuad beam{ XR_TYPE_COMPOSITION_LAYER_QUAD };
-    const XrCompositionLayerBaseHeader* layers[2];
+    const XrCompositionLayerBaseHeader* layers[3];
     uint32_t layerCount = 0;
-    if (s.pending.state.shouldRender && s.quad.hasImage) {
+    const bool render = s.pending.state.shouldRender || ForceRender();
+    // A black projection layer under the panel, so nothing the compositor draws on its own shows
+    // through around it. With only quad layers submitted, a corrupted, enlarged and mirrored copy of
+    // the 64DD splash appeared behind the panel (2026-10-04 wear), although the image copied into
+    // the panel was clean (GDX_VR_DUMP_FLAT_EVERY). Most likely SteamVR still showed the Steam
+    // launch's desktop window on a theater screen until the app submitted a projection layer.
+    if (render && s.eyes[0].handle != XR_NULL_HANDLE && s.eyes[1].handle != XR_NULL_HANDLE) {
+        XrViewLocateInfo vli{ XR_TYPE_VIEW_LOCATE_INFO };
+        vli.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
+        vli.displayTime = s.pending.state.predictedDisplayTime;
+        vli.space = s.localSpace;
+        XrViewState vs{ XR_TYPE_VIEW_STATE };
+        XrView views[2] = { { XR_TYPE_VIEW }, { XR_TYPE_VIEW } };
+        uint32_t located = 0;
+        if (XR_SUCCEEDED(xrLocateViews(s.session, &vli, &vs, 2, &located, views)) && located == 2 &&
+            (vs.viewStateFlags & XR_VIEW_STATE_ORIENTATION_VALID_BIT) != 0 &&
+            ClearSwapchainImage(s.eyes[0], 0.0f, 0.0f, 0.0f, 1.0f) &&
+            ClearSwapchainImage(s.eyes[1], 0.0f, 0.0f, 0.0f, 1.0f)) {
+            for (int e = 0; e < 2; e++) {
+                backdropViews[e].pose = views[e].pose;
+                backdropViews[e].fov = views[e].fov;
+                backdropViews[e].subImage.swapchain = s.eyes[e].handle;
+                backdropViews[e].subImage.imageRect.offset = { 0, 0 };
+                backdropViews[e].subImage.imageRect.extent = { s.eyes[e].width, s.eyes[e].height };
+            }
+            backdrop.space = s.localSpace;
+            backdrop.viewCount = 2;
+            backdrop.views = backdropViews;
+            layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&backdrop);
+        }
+    }
+    if (render && s.quad.hasImage) {
         const Pose pose = FlatQuadPose();
         quad.space = s.localSpace;
         quad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
@@ -1675,7 +1719,7 @@ void EndPendingWithQuad() {
     // The menu pointer's laser: a thin solid quad from the hand to the hit (or 1.5 m out), turned
     // toward the head. Composited after the panel, so it draws over it up to the hit point.
     const XrInput& in = s.input;
-    if (s.pending.state.shouldRender && s.menuOpen && in.beamValid && s.beam.hasImage) {
+    if (render && s.menuOpen && in.beamValid && s.beam.hasImage) {
         beam.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT |
                           XR_COMPOSITION_LAYER_UNPREMULTIPLIED_ALPHA_BIT;
         beam.space = s.localSpace;
@@ -1693,6 +1737,66 @@ void EndPendingWithQuad() {
     EndPending(layers, layerCount);
 }
 
+// GDX_VR_DUMP_FLAT_EVERY=<k> (with GDX_VR_DUMP_FLAT_UNTIL=<n>, default 600): write the window back
+// buffer the flat quad shows (vr-flat-<i>.bmp) every k-th flat tick up to tick n, to see boot and
+// menu screens as the headset gets them.
+void DumpFlatIfDue(int w, int h) {
+    static const long every = [] {
+        const char* e = std::getenv("GDX_VR_DUMP_FLAT_EVERY");
+        return (e != nullptr && e[0] != '\0') ? std::strtol(e, nullptr, 10) : 0L;
+    }();
+    static const long until = [] {
+        const char* e = std::getenv("GDX_VR_DUMP_FLAT_UNTIL");
+        return (e != nullptr && e[0] != '\0') ? std::strtol(e, nullptr, 10) : 600L;
+    }();
+    static long frame = 0;
+    const long i = frame++;
+    if (every <= 0 || i > until || (i % every) != 0 || w <= 0 || h <= 0) {
+        return;
+    }
+    std::vector<unsigned char> rgba((size_t)w * (size_t)h * 4u);
+    GLint prevRead = 0;
+    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &prevRead);
+    S().gl.bindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+    glReadBuffer(GL_BACK);
+    glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
+    S().gl.bindFramebuffer(GL_READ_FRAMEBUFFER, (GLuint)prevRead);
+    char path[64];
+    std::snprintf(path, sizeof(path), "vr-flat-%04ld.bmp", i);
+    FILE* f = std::fopen(path, "wb");
+    if (f == nullptr) {
+        return;
+    }
+    const int rowBytes = ((w * 3) + 3) & ~3;
+    unsigned char hdr[54] = { 'B', 'M' };
+    auto put32 = [&](int at, unsigned v) {
+        hdr[at] = v & 0xFF;
+        hdr[at + 1] = (v >> 8) & 0xFF;
+        hdr[at + 2] = (v >> 16) & 0xFF;
+        hdr[at + 3] = (v >> 24) & 0xFF;
+    };
+    put32(2, 54u + (unsigned)rowBytes * (unsigned)h);
+    put32(10, 54);
+    put32(14, 40);
+    put32(18, (unsigned)w);
+    put32(22, (unsigned)h);
+    hdr[26] = 1;
+    hdr[28] = 24;
+    put32(34, (unsigned)rowBytes * (unsigned)h);
+    std::fwrite(hdr, 1, sizeof(hdr), f);
+    std::vector<unsigned char> row((size_t)rowBytes, 0);
+    for (int y = 0; y < h; y++) { // glReadPixels rows are bottom-up, as BMP wants
+        const unsigned char* src = &rgba[(size_t)y * (size_t)w * 4u];
+        for (int x = 0; x < w; x++) {
+            row[(size_t)x * 3 + 0] = src[x * 4 + 2];
+            row[(size_t)x * 3 + 1] = src[x * 4 + 1];
+            row[(size_t)x * 3 + 2] = src[x * 4 + 0];
+        }
+        std::fwrite(row.data(), 1, row.size(), f);
+    }
+    std::fclose(f);
+}
+
 // Installed into libultraship's Interpreter::EndFrame while a session exists. Flat ticks only.
 void PrePresentHook() {
     State& s = S();
@@ -1700,6 +1804,13 @@ void PrePresentHook() {
         return;
     }
     CountTick();
+    {
+        // Every flat tick, shown or not (an idle headset is in standby and shows nothing).
+        int dumpW = 0;
+        int dumpH = 0;
+        SDL_GL_GetDrawableSize(SDL_GL_GetCurrentWindow(), &dumpW, &dumpH);
+        DumpFlatIfDue(dumpW, dumpH);
+    }
     if (!s.pending.waited || s.pending.ticksOwed > 0) {
         return; // a catch-up tick: only the last tick before the frame is shown
     }
@@ -1707,7 +1818,7 @@ void PrePresentHook() {
         s.pending = PendingFrame{};
         return;
     }
-    if (s.pending.state.shouldRender) {
+    if (s.pending.state.shouldRender || ForceRender()) {
         int drawW = 0;
         int drawH = 0;
         SDL_GL_GetDrawableSize(SDL_GL_GetCurrentWindow(), &drawW, &drawH);
