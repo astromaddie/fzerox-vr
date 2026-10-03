@@ -370,10 +370,11 @@ void InitSettings() {
         CVarSave();
     }
     gdx_port_logf("[vr] settings: stereo=%d wide_cull=%d camera_mode=%d horizon_lock=%d level_pitch=%d "
-                  "hud_aspect=%.3f hud_height=%.2f roof_forward=%.1f roof_clearance=%.1f world_scale=%.1f haptics=%.2f refresh_rate=%d%s\n",
+                  "hud_aspect=%.3f hud_height=%.2f roof_forward=%.1f roof_clearance=%.1f cockpit_tilt=%.2f world_scale=%.1f haptics=%.2f refresh_rate=%d%s\n",
                   SettingInt(kSetStereo), SettingInt(kSetWideCull), SettingInt(kSetCameraMode),
                   SettingInt(kSetHorizonLock), SettingInt(kSetLevelPitch), SettingFloat(kSetHudAspect), SettingFloat(kSetHudHeight),
-                  SettingFloat(kSetRoofForward), SettingFloat(kSetRoofClearance), SettingFloat(kSetWorldScale),
+                  SettingFloat(kSetRoofForward), SettingFloat(kSetRoofClearance), SettingFloat(kSetCockpitTilt),
+                  SettingFloat(kSetWorldScale),
                   SettingFloat(kSetHaptics), SettingInt(kSetRefreshRate), dirty ? " (saved)" : "");
 }
 
@@ -2185,9 +2186,10 @@ bool CockpitMode() {
     return S().cockpit;
 }
 
-void CockpitOffsets(int machine, float* forward, float* up) {
+void CockpitOffsets(int machine, float* forward, float* up, float* tilt) {
     *forward = SettingFloat(kSetRoofForward);
     *up = gdx_vr::CockpitRoofHeight(machine, *forward) + SettingFloat(kSetRoofClearance);
+    *tilt = SettingFloat(kSetCockpitTilt);
 }
 
 bool BuildActiveEyeProjView(const float eye[3], const float at[3], const float up[3], float nearZ, float farZ,

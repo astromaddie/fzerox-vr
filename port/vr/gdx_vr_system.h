@@ -69,6 +69,7 @@ enum SettingId {
     kSetHudHeight,
     kSetRoofForward, // cockpit eye, world units along the machine's forward from its origin
     kSetRoofClearance, // cockpit eye, world units above the machine's roof (CockpitRoofHeight)
+    kSetCockpitTilt, // cockpit view follows the machine's lean and tilt: 0 travel frame .. 1 the body's
     kSetWorldScale,
     kSetHaptics, // scale for every haptic pulse (standard.md section 6), 0 = off
     kSetRefreshRate, // Hz ceiling for the display refresh-rate request (XR_FB_display_refresh_rate)

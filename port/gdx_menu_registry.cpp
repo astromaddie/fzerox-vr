@@ -1079,9 +1079,51 @@ void GdxMenu::RegisterMenu() {
                   WidgetInfo{ .name = "Cockpit view", .cVar = "gEnhancements.VR.CameraMode",
                               .type = GdxUI::WIDGET_CVAR_CHECKBOX }
                       .Options(UIWidgets::CheckboxOptions().DefaultValue(false).Tooltip(
-                          "Ride just above the machine's windshield instead of the chase camera.\n"
+                          "Ride on your machine's roof instead of the chase camera.\n"
                           "Also toggled in a race with the right B button."))
                       .SearchTerms("cockpit chase camera first person"));
+        AddWidget("VR", "VR Settings", SECTION_COLUMN_1,
+                  WidgetInfo{ .name = "Cockpit height above roof", .cVar = "gEnhancements.VR.RoofClearance",
+                              .type = GdxUI::WIDGET_CVAR_SLIDER_FLOAT }
+                      .Options(UIWidgets::FloatSliderOptions{ .flags = ImGuiSliderFlags_AlwaysClamp }
+                                   .Format("%.1f")
+                                   .Min(0.0f)
+                                   .Max(20.0f)
+                                   .Step(0.5f)
+                                   .DefaultValue(5.0f)
+                                   .ShowButtons(false)
+                                   .LabelPosition(UIWidgets::LabelPositions::Near)
+                                   .Tooltip("How far above the machine's roof the cockpit view sits, in game units\n"
+                                            "(10 units is about a metre at the default world scale)."))
+                      .SearchTerms("cockpit height roof camera"));
+        AddWidget("VR", "VR Settings", SECTION_COLUMN_1,
+                  WidgetInfo{ .name = "Cockpit seat forward", .cVar = "gEnhancements.VR.RoofForward",
+                              .type = GdxUI::WIDGET_CVAR_SLIDER_FLOAT }
+                      .Options(UIWidgets::FloatSliderOptions{ .flags = ImGuiSliderFlags_AlwaysClamp }
+                                   .Format("%.1f")
+                                   .Min(-12.0f)
+                                   .Max(12.0f)
+                                   .Step(0.5f)
+                                   .DefaultValue(3.0f)
+                                   .ShowButtons(false)
+                                   .LabelPosition(UIWidgets::LabelPositions::Near)
+                                   .Tooltip("Moves the cockpit view forward (positive) or back along the machine,\n"
+                                            "in game units. The height follows the roof's shape."))
+                      .SearchTerms("cockpit forward back seat camera"));
+        AddWidget("VR", "VR Settings", SECTION_COLUMN_1,
+                  WidgetInfo{ .name = "Cockpit tilts with machine", .cVar = "gEnhancements.VR.CockpitTilt",
+                              .type = GdxUI::WIDGET_CVAR_SLIDER_FLOAT }
+                      .Options(UIWidgets::FloatSliderOptions{ .flags = ImGuiSliderFlags_AlwaysClamp }
+                                   .Format("%.2f")
+                                   .Min(0.0f)
+                                   .Max(1.0f)
+                                   .Step(0.05f)
+                                   .DefaultValue(1.0f)
+                                   .ShowButtons(false)
+                                   .LabelPosition(UIWidgets::LabelPositions::Near)
+                                   .Tooltip("1 leans and tilts with your machine's body; 0 follows only the track.\n"
+                                            "In between is a partial tilt. Horizon lock removes the roll entirely."))
+                      .SearchTerms("cockpit tilt lean roll bank comfort"));
 
         AddWidget("VR", "VR Settings", SECTION_COLUMN_1,
                   WidgetInfo{ .name = "View", .type = GdxUI::WIDGET_SEPARATOR_TEXT });

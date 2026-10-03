@@ -1772,16 +1772,18 @@ void gdx_vr_camera_track_up(float out[3]) {
 }
 
 /* VR cockpit view (port/vr): the followed racer's rendered position (modelPos, what the machine's
-   model matrix is built from) and its travel orientation (trueBasis: x forward, y up). The travel
-   basis, not the model basis, so the view does not spin through spin attacks or roll with the
-   body's lean animation. Read once per tick by the gfx bridge, which interpolates it like the
-   camera. Returns the stock model the racer draws (sMachineDrawFuncs index, as func_8008D3C4 picks
-   it: the pilot's own machine, or 30.. for a super machine), so the eye can sit on that model's
-   roof; -1 when the model is not a stock one (an edited custom machine, or model packs enabled). */
+   model matrix is built from) and its travel orientation (trueBasis: x forward, y up). The heading
+   comes from the travel basis, not the model basis, so the view does not spin through spin attacks.
+   modelUp is the body's up (modelBasis.y: the lean and smoothed tilt the machine is drawn with; the
+   spin attack only turns modelBasis.x), so the cockpit can tilt with the machine. Read once per
+   tick by the gfx bridge, which interpolates it like the camera. Returns the stock model the racer
+   draws (sMachineDrawFuncs index, as func_8008D3C4 picks it: the pilot's own machine, or 30.. for a
+   super machine), so the eye can sit on that model's roof; -1 when the model is not a stock one (an
+   edited custom machine, or model packs enabled). */
 extern Machine gMachines[];
 extern int gdx_model_packs_enabled(void);
 
-int gdx_vr_read_player_vehicle(float pos[3], float forward[3], float up[3]) {
+int gdx_vr_read_player_vehicle(float pos[3], float forward[3], float up[3], float modelUp[3]) {
     const Racer* racer = &gRacers[gCameras[0].id];
     s32 customType;
 
@@ -1794,6 +1796,9 @@ int gdx_vr_read_player_vehicle(float pos[3], float forward[3], float up[3]) {
     up[0] = racer->trueBasis.y.x;
     up[1] = racer->trueBasis.y.y;
     up[2] = racer->trueBasis.y.z;
+    modelUp[0] = racer->modelBasis.y.x;
+    modelUp[1] = racer->modelBasis.y.y;
+    modelUp[2] = racer->modelBasis.y.z;
 
     if (racer->character < 0 || racer->character >= 30 || gdx_model_packs_enabled()) {
         return -1;

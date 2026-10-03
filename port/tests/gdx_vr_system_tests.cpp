@@ -247,6 +247,9 @@ static void CaseSettings() {
     check("roof forward clamps to the measured span", SanitizeSetting(kSetRoofForward, 40.0) == 12.0 &&
                                                         SanitizeSetting(kSetRoofForward, -40.0) == -12.0);
     check("roof clearance cannot go below the roof", SanitizeSetting(kSetRoofClearance, -5.0) == 0.0);
+    check("cockpit tilt clamps to 0..1", SanitizeSetting(kSetCockpitTilt, -1.0) == 0.0 &&
+                                         SanitizeSetting(kSetCockpitTilt, 2.0) == 1.0 &&
+                                         SanitizeSetting(kSetCockpitTilt, 0.5) == 0.5);
     check("all CVar names are in the gEnhancements.VR namespace", [] {
         for (int i = 0; i < kSettingCount; i++) {
             const char* n = Setting(static_cast<SettingId>(i)).cvar;

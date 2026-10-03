@@ -2949,11 +2949,11 @@ extern "C" void gdx_vr_background_vtx_build_eye(const float eyePos[3], const flo
                                                 float tanHalfX, float tanHalfY);
 // port/decomp_port.c: the followed racer's rendered position and travel basis, for the cockpit view.
 // Returns its stock model index (gdx_vr::CockpitRoofHeight), or -1.
-extern "C" int gdx_vr_read_player_vehicle(float pos[3], float forward[3], float up[3]);
-// Player vehicle pose for this tick and the previous one (pos, forward, up), rolled with the camera
-// poses so the cockpit anchor interpolates at the same t as the rendered machine.
-static float gGdxVrVehCur[9];
-static float gGdxVrVehPrev[9];
+extern "C" int gdx_vr_read_player_vehicle(float pos[3], float forward[3], float up[3], float modelUp[3]);
+// Player vehicle pose for this tick and the previous one (pos, travel forward, travel up, body up),
+// rolled with the camera poses so the cockpit anchor interpolates at the same t as the rendered machine.
+static float gGdxVrVehCur[12];
+static float gGdxVrVehPrev[12];
 static bool gGdxVrVehCurOk = false;
 static bool gGdxVrVehPrevOk = false;
 static int gGdxVrVehMachine = -1; // this tick's model, not interpolated (it changes only between races)
@@ -3361,7 +3361,8 @@ class N64DisplayListAdapter {
         if (GdxVrStereoTick()) {
             std::memcpy(gGdxVrVehPrev, gGdxVrVehCur, sizeof(gGdxVrVehCur));
             gGdxVrVehPrevOk = gGdxVrVehCurOk;
-            gGdxVrVehMachine = gdx_vr_read_player_vehicle(&gGdxVrVehCur[0], &gGdxVrVehCur[3], &gGdxVrVehCur[6]);
+            gGdxVrVehMachine =
+                gdx_vr_read_player_vehicle(&gGdxVrVehCur[0], &gGdxVrVehCur[3], &gGdxVrVehCur[6], &gGdxVrVehCur[9]);
             gGdxVrVehCurOk = true;
         } else {
             gGdxVrVehCurOk = gGdxVrVehPrevOk = false;
@@ -3455,25 +3456,46 @@ class N64DisplayListAdapter {
         float pv[4][4];
         if (gdx_vr::CockpitMode() && gGdxVrVehCurOk) {
             // Cockpit: anchor on the machine itself, interpolated at the same t as its model matrix.
-            float v[9];
+            float v[12];
             std::memcpy(v, gGdxVrVehCur, sizeof(v));
             if (gGdxVrVehPrevOk && !recSnap && recPrev != 0 && !mForceCutSnap && t < 1.0f) {
-                for (int i = 0; i < 9; ++i) {
+                for (int i = 0; i < 12; ++i) {
                     v[i] = gGdxVrVehPrev[i] + (gGdxVrVehCur[i] - gGdxVrVehPrev[i]) * t;
                 }
             }
+            float roofForward = 0.0f, roofUp = 0.0f, tilt = 0.0f;
+            gdx_vr::CockpitOffsets(gGdxVrVehMachine, &roofForward, &roofUp, &tilt);
+            // Up blends from the travel frame to the body's (its lean and tilt) by CockpitTilt. The
+            // heading stays the travel forward, flattened against that up, so a spin attack never
+            // turns the view.
+            float up[3] = { v[6] + (v[9] - v[6]) * tilt, v[7] + (v[10] - v[7]) * tilt, v[8] + (v[11] - v[8]) * tilt };
+            const float ulen = std::sqrt(up[0] * up[0] + up[1] * up[1] + up[2] * up[2]);
+            if (ulen < 1e-4f) {
+                return false;
+            }
+            for (float& c : up) {
+                c /= ulen;
+            }
+            const float along = v[3] * up[0] + v[4] * up[1] + v[5] * up[2];
+            float fwd[3] = { v[3] - along * up[0], v[4] - along * up[1], v[5] - along * up[2] };
+            const float flen = std::sqrt(fwd[0] * fwd[0] + fwd[1] * fwd[1] + fwd[2] * fwd[2]);
+            if (flen < 1e-4f) {
+                return false;
+            }
+            for (float& c : fwd) {
+                c /= flen;
+            }
             // The eye rides on this machine's roof: RoofForward along its forward, then the roof
             // height there (measured per stock model) plus RoofClearance up.
-            float roofForward = 0.0f, roofUp = 0.0f;
-            gdx_vr::CockpitOffsets(gGdxVrVehMachine, &roofForward, &roofUp);
-            const float eye[3] = { v[0] + v[3] * roofForward + v[6] * roofUp,
-                                   v[1] + v[4] * roofForward + v[7] * roofUp,
-                                   v[2] + v[5] * roofForward + v[8] * roofUp };
-            const float at[3] = { eye[0] + v[3], eye[1] + v[4], eye[2] + v[5] };
-            const float up[3] = { v[6], v[7], v[8] };
-            // The roof sits a few tenths of a metre below the eye: pull the near plane in.
-            const float nearZ = (pose.nearZ > 2.0f) ? 2.0f : pose.nearZ;
-            if (!gdx_vr::BuildActiveEyeProjView(eye, at, up, nearZ, pose.farZ, pv, false)) {
+            const float eye[3] = { v[0] + fwd[0] * roofForward + up[0] * roofUp,
+                                   v[1] + fwd[1] * roofForward + up[1] * roofUp,
+                                   v[2] + fwd[2] * roofForward + up[2] * roofUp };
+            const float at[3] = { eye[0] + fwd[0], eye[1] + fwd[1], eye[2] + fwd[2] };
+            // The game camera's own near plane: fog is computed from z/w (interpreter.cpp), so a
+            // different near re-maps every distance (the whole scene fogged), and a smaller one costs
+            // depth precision far away (distant scenery z-fights). The roof nearer than that is not
+            // clipped: the GL backend enables GL_DEPTH_CLAMP, so it draws at the near depth.
+            if (!gdx_vr::BuildActiveEyeProjView(eye, at, up, pose.nearZ, pose.farZ, pv, false)) {
                 return false;
             }
         } else {
