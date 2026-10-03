@@ -352,9 +352,10 @@ edits all of these except `Stereo` and `WideCull`.
   returns; 8 of 8 runs of the fixed build exit 0. A second signal still kills the process outright.
   SIGQUIT still goes through libultraship. `gdx_vr_settings_tests` covers the first-launch settings
   path and this exit (set `GDX_VR_SETTINGS_TESTS_OLD_SIGTERM=1` to see the old behaviour under
-  ASan). Why only the two saving runs failed on the Frame is still unexplained: nothing in
-  `CVarSave` registers an exit handler, so it was probably chance or heap layout. Not yet re-run on
-  the Frame.
+  ASan). The early Frame pattern (only the two saving runs failed) was chance: a later
+  Frame run with a config that needed no save (2026-10-03, skybox diagnosis) also hung after
+  SIGTERM and had to be killed. The fixed build is not yet re-run on the Frame, so the VR-session
+  teardown on this close path has not run with a live OpenXR session.
 - Not yet seen through the headset: world scale, comfort (the chase camera's roll in pipes and loops
   is applied to the viewer's reference frame), HUD size/distance, brightness.
 - Screen-space sprites the game draws in the world part of the list are now handled per kind
