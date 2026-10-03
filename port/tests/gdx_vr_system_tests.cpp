@@ -227,7 +227,7 @@ static void CaseSettings() {
         return true;
     }());
     check("NaN falls back to the default", SanitizeSetting(kSetHudHeight, nan) == 1.2);
-    check("inf falls back to the default", SanitizeSetting(kSetWorldScale, inf) == 10.0);
+    check("inf falls back to the default", SanitizeSetting(kSetWorldScale, inf) == 1.0);
     check("-inf falls back to the default", SanitizeSetting(kSetStereo, -inf) == 1.0);
     check("switch above range clamps to 1", SanitizeSetting(kSetHorizonLock, 7.0) == 1.0);
     check("switch below range clamps to 0", SanitizeSetting(kSetStereo, -3.0) == 0.0);

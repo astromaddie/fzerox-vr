@@ -322,9 +322,9 @@ Persistence and ranges: the first VR launch registers all ten `gEnhancements.VR.
 defaults and saves the libultraship config (`CVarSave`), so they appear in the config file and persist
 from then on. On load, out-of-range or non-finite values are clamped and written back (and a value of
 the wrong CVar type, e.g. `"HudHeight": 2`, is converted); every read clamps again. The log prints a
-`[vr] settings:` line with the effective values. Ranges: `Stereo`, `WideCull`, `CameraMode`,
-`HorizonLock`, `LevelPitch` 0..1; `HudAspect` 4/3..4 (default 1.5); `HudHeight` 0.3..3 m (1.2);
-`RoofForward` -12..12 world units (5.8); `RoofClearance` 0..20 world units (4.7); `CockpitTilt` 0..1 (1); `WorldScale` 1..50 (10; both views); `Haptics` 0..1 (0.6);
+`[vr] settings:` line with the effective values. Ranges: `Stereo`, `WideCull`, `CameraMode` (default 1,
+cockpit), `HorizonLock`, `LevelPitch` 0..1; `HudAspect` 4/3..4 (default 1.5); `HudHeight` 0.3..3 m (1.2);
+`RoofForward` -12..12 world units (5.8); `RoofClearance` 0..20 world units (3.5); `CockpitTilt` 0..1 (0.5); `WorldScale` 1..50 (1; both views); `Haptics` 0..1 (0.6);
 `RefreshRate` 60..144 (90). Chase/cockpit toggles also save `CameraMode`. The VR tab of the menu (below)
 edits all of these except `Stereo` and `WideCull`.
 
@@ -392,16 +392,18 @@ edits all of these except `Stereo` and `WideCull`.
 - Recentre: see "System layer" below. Chase view is levelled against the track's up
   (`Camera.racerBasis.y`; `gEnhancements.VR.LevelPitch`, default 1) while still banking with it.
 - Cockpit view (the plan's "Nose VR"): right B on the Frame controllers toggles chase ↔ cockpit
-  (start mode `gEnhancements.VR.CameraMode`, 0 chase / 1 cockpit; `GDX_VR_COCKPIT=1` for tests).
+  (start mode `gEnhancements.VR.CameraMode`, 0 chase / 1 cockpit, default cockpit; `GDX_VR_COCKPIT=1`
+  for tests).
   The eye rides on the machine's roof, so the nose is in view ahead. It is anchored at the followed
   racer's rendered position (`modelPos`, the model's underside), moved `gEnhancements.VR.RoofForward`
   (5.8) world units along its forward, then up by that machine's roof height there plus
-  `gEnhancements.VR.RoofClearance` (4.7 world units). Defaults moved from
+  `gEnhancements.VR.RoofClearance` (3.5 world units). Defaults moved from
   0 and 3 after the first look (2026-10-03: "slightly too low, slightly too far back"), then to the
-  wearer's own slider settings (5.8 forward, 4.7 clearance).
+  wearer's own slider settings. The current defaults (cockpit view, 5.8 forward, 3.5 clearance,
+  tilt 0.5, world scale 1) are the settings the wearer tested and asked to keep (2026-10-03).
   - Orientation: the view's up blends from the travel basis (`trueBasis.y`) to the body's
     (`modelBasis.y`: the steering lean and the smoothed tilt the machine is drawn with) by
-    `gEnhancements.VR.CockpitTilt` (1 = tilts with the machine). The heading is the travel forward
+    `gEnhancements.VR.CockpitTilt` (0.5 by default; 1 = tilts fully with the machine). The heading is the travel forward
     flattened against that up, so a spin attack (which turns only `modelBasis.x`) never spins the
     view. `HorizonLock` still removes roll. All three cockpit settings are on the VR menu page.
   - Roof heights differ six-fold across the roster (Twin Noritta ~3.5 units at the centreline,

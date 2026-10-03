@@ -167,7 +167,7 @@ static void CaseWrongTypes() {
     check("every key written with its type", AllKeysTyped(vr));
     check("float for an int converted (Stereo 1)", vr.value("Stereo", -1) == 1);
     check("int for a float converted (HudHeight 2.0)", std::fabs(vr.value("HudHeight", 0.0) - 2.0) < 1e-6);
-    check("string replaced by the default (WorldScale 10)", std::fabs(vr.value("WorldScale", 0.0) - 10.0) < 1e-6);
+    check("string replaced by the default (WorldScale 1)", std::fabs(vr.value("WorldScale", 0.0) - 1.0) < 1e-6);
     check("out of range clamped (RefreshRate 144)", vr.value("RefreshRate", 0) == 144);
     check("in-range value kept (Haptics 0.25)", std::fabs(vr.value("Haptics", 0.0) - 0.25) < 1e-6);
     check("second pass has nothing to save", !gdx_vr::InitSettings());

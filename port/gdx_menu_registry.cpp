@@ -1078,7 +1078,7 @@ void GdxMenu::RegisterMenu() {
         AddWidget("VR", "VR Settings", SECTION_COLUMN_1,
                   WidgetInfo{ .name = "Cockpit view", .cVar = "gEnhancements.VR.CameraMode",
                               .type = GdxUI::WIDGET_CVAR_CHECKBOX }
-                      .Options(UIWidgets::CheckboxOptions().DefaultValue(false).Tooltip(
+                      .Options(UIWidgets::CheckboxOptions().DefaultValue(true).Tooltip(
                           "Ride on your machine's roof instead of the chase camera.\n"
                           "Also toggled in a race with the right B button."))
                       .SearchTerms("cockpit chase camera first person"));
@@ -1090,7 +1090,7 @@ void GdxMenu::RegisterMenu() {
                                    .Min(0.0f)
                                    .Max(20.0f)
                                    .Step(0.5f)
-                                   .DefaultValue(4.7f)
+                                   .DefaultValue(3.5f)
                                    .ShowButtons(false)
                                    .LabelPosition(UIWidgets::LabelPositions::Near)
                                    .Tooltip("How far above the machine's roof the cockpit view sits, in game units\n"
@@ -1118,7 +1118,7 @@ void GdxMenu::RegisterMenu() {
                                    .Min(0.0f)
                                    .Max(1.0f)
                                    .Step(0.05f)
-                                   .DefaultValue(1.0f)
+                                   .DefaultValue(0.5f)
                                    .ShowButtons(false)
                                    .LabelPosition(UIWidgets::LabelPositions::Near)
                                    .Tooltip("1 leans and tilts with your machine's body; 0 follows only the track.\n"
@@ -1135,7 +1135,7 @@ void GdxMenu::RegisterMenu() {
                                    .Min(1.0f)
                                    .Max(50.0f)
                                    .Step(0.5f)
-                                   .DefaultValue(10.0f)
+                                   .DefaultValue(1.0f)
                                    .ShowButtons(false)
                                    .LabelPosition(UIWidgets::LabelPositions::Near)
                                    .Tooltip("Game units per real metre, for both views. Lower makes the world\n"
