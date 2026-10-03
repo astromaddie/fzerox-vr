@@ -33,7 +33,7 @@ const SettingInfo kSettings[kSettingCount] = {
     { "gEnhancements.VR.RoofForward", false, 5.8, -12.0, 12.0 },  // cockpit eye, world units
     { "gEnhancements.VR.RoofClearance", false, 4.7, 0.0, 20.0 },  // (defaults: first worn tuning)
     { "gEnhancements.VR.CockpitTilt", false, 1.0, 0.0, 1.0 },     // 0 travel frame .. 1 machine body
-    { "gEnhancements.VR.WorldScale", false, 10.0, 2.0, 50.0 },    // world units per metre
+    { "gEnhancements.VR.WorldScale", false, 10.0, 1.0, 50.0 },    // world units per metre
     { "gEnhancements.VR.Haptics", false, 0.6, 0.0, 1.0 },         // pulse strength scale
     { "gEnhancements.VR.RefreshRate", true, 90.0, 60.0, 144.0 },  // Hz ceiling, highest offered <= it
 };

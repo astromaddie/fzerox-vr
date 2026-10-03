@@ -376,6 +376,17 @@ long long DumpFrame() {
     return n;
 }
 
+// GDX_VR_DUMP_COUNT=<k>: with GDX_VR_DUMP_FRAME, dump k consecutive stereo frames (left eye only when
+// k > 1), to see what changes from one frame to the next (popping, flicker).
+long long DumpCount() {
+    static const long long n = [] {
+        const char* e = std::getenv("GDX_VR_DUMP_COUNT");
+        const long long v = (e != nullptr && e[0] != '\0') ? std::strtoll(e, nullptr, 10) : 1;
+        return v < 1 ? 1 : v;
+    }();
+    return n;
+}
+
 typedef void (*PFN_GetTexImage)(GLenum, GLint, GLenum, GLenum, void*);
 
 // Write a top-down RGBA8 texture as a bottom-up 24-bit BMP.
@@ -2211,7 +2222,8 @@ void PresentStereoTick(const StereoCallbacks& cb) {
                                 sWorldSpriteDumped = true;
                             }
                         }
-                        if (s.stereoFrames == DumpFrame()) {
+                        if (DumpFrame() >= 0 && s.stereoFrames >= DumpFrame() &&
+                            s.stereoFrames < DumpFrame() + DumpCount() && (DumpCount() == 1 || e == 0)) {
                             char path[64];
                             std::snprintf(path, sizeof(path), "vr-eye%d-%lld.bmp", e, s.stereoFrames);
                             DumpTexture(tex, s.eyes[e].width, s.eyes[e].height, path);

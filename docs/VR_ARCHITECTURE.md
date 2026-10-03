@@ -295,6 +295,9 @@ Measured on the Frame (72 Hz runtime default, headset in standby, forced renderi
 | `GDX_VR_DUMP_FRAME=<n>` | Write both eyes (`vr-eye<e>-<n>.bmp`) and the HUD rendered over black and over white (`vr-hud-black.bmp`, `vr-hud-white.bmp`; the two inputs of the alpha-recovery shader) of stereo frame n; each dump logs its % fully transparent pixels. |
 | `GDX_VR_DIAG_YAW=<deg>` | Turn the tracked head about LOCAL +y, to capture head turns unattended. |
 | `GDX_VR_DUMP_ON_SPRITE=1` | Dump the eyes of the first stereo frame that places a world sprite (`vr-sprite-eye<e>.bmp`) and the HUD of the first tick that draws a HUD sprite (`vr-sprite-hud.bmp`). |
+| `GDX_VR_DUMP_COUNT=<k>` | With `GDX_VR_DUMP_FRAME`, dump k consecutive stereo frames (left eye only when k > 1). Each dump is a synchronous readback, so dumped frames are several ticks apart. |
+| `GDX_VR_DIAG_GEOM=<n>` | Log the first n cockpit eye renders' far-plane vertex count, clip-rejected and emitted triangles (`[vr-geom]`). |
+| `GDX_VR_COCKPIT_NEAR=<units>`, `GDX_VR_COCKPIT_FAR_SCALE=<x>` | Override the cockpit projection's near plane (default 2) and far multiple (default 4), for experiments. |
 | `GDX_PERF=1` | Makes the `logic` and `xlate` stages of `[vr-perf]` real (they come from the port's GDX_PERF telemetry; they read 0.00 otherwise). |
 
 `[vr-perf]` is logged every 10 s while a session runs (sfvr_perf, the cross-port format):
@@ -321,7 +324,7 @@ from then on. On load, out-of-range or non-finite values are clamped and written
 the wrong CVar type, e.g. `"HudHeight": 2`, is converted); every read clamps again. The log prints a
 `[vr] settings:` line with the effective values. Ranges: `Stereo`, `WideCull`, `CameraMode`,
 `HorizonLock`, `LevelPitch` 0..1; `HudAspect` 4/3..4 (default 1.5); `HudHeight` 0.3..3 m (1.2);
-`RoofForward` -12..12 world units (5.8); `RoofClearance` 0..20 world units (4.7); `CockpitTilt` 0..1 (1); `WorldScale` 2..50 (10, chase view only; the cockpit is always 10); `Haptics` 0..1 (0.6);
+`RoofForward` -12..12 world units (5.8); `RoofClearance` 0..20 world units (4.7); `CockpitTilt` 0..1 (1); `WorldScale` 1..50 (10; both views); `Haptics` 0..1 (0.6);
 `RefreshRate` 60..144 (90). Chase/cockpit toggles also save `CameraMode`. The VR tab of the menu (below)
 edits all of these except `Stereo` and `WideCull`.
 
@@ -387,7 +390,7 @@ edits all of these except `Stereo` and `WideCull`.
   The eye rides on the machine's roof, so the nose is in view ahead. It is anchored at the followed
   racer's rendered position (`modelPos`, the model's underside), moved `gEnhancements.VR.RoofForward`
   (5.8) world units along its forward, then up by that machine's roof height there plus
-  `gEnhancements.VR.RoofClearance` (4.7, about 0.5 m; the cockpit is life-size). Defaults moved from
+  `gEnhancements.VR.RoofClearance` (4.7 world units). Defaults moved from
   0 and 3 after the first look (2026-10-03: "slightly too low, slightly too far back"), then to the
   wearer's own slider settings (5.8 forward, 4.7 clearance).
   - Orientation: the view's up blends from the travel basis (`trueBasis.y`) to the body's
@@ -409,9 +412,13 @@ edits all of these except `Stereo` and `WideCull`.
     (the whole scene fogged), so the bridge computes `Interpreter::SetVrFogRemap` per eye: both
     projections give z/w = A - B/distance, and fog reads `bias + k*(z/w)` with k = B_game/B_eye,
     bias = A_game - k*A_eye. That is exactly the game camera's fog at every distance.
-  - Open: distant backdrop buildings flickered in cockpit view (seen with near 2). Suspect depth
-    precision (24-bit depth, 8x worse than at near 16) or the interpreter's far-plane rejection
-    (`z > w`). Not yet diagnosed.
+  - Far plane 4x the game camera's. With near 2 the backdrop (7000 units, far 8192) sat within ~8e-5
+    of z/w = 1, about the matrices' s15.16 rounding, so its vertices crossed the far plane from frame
+    to frame and whole triangles popped ("skybox buildings flicker", 2026-10-03 wear). Measured on
+    the Frame with `GDX_VR_DIAG_GEOM` in the attract demo: far-plane vertices per left-eye render
+    0..112, mean 28.8, unstable in 65 of 750 frames at 1x; 0 in every frame at 4x, with the same
+    triangle count. Not depth precision: the backdrop is drawn without Z. The fog remap uses each
+    projection's own near and far.
   - Clip, not reject: the machines are drawn with the F3DEX2.Rej microcode, which the interpreter
     emulates by dropping any triangle with a vertex behind the eye, inside the near plane or past
     twice the viewport. From the roof, a hull face hit that as soon as one corner left the view, so
@@ -419,8 +426,8 @@ edits all of these except `Stereo` and `WideCull`.
     `Interpreter::SetVrClipNotReject`, so those triangles go to the homogeneous clipper (added after
     the reject emulation, and the reason the "giant wedges" it guarded against no longer occur).
     Flat mode and the chase view keep the reject behaviour.
-  - Scale: always life-size, `kGameUnitsPerMeter` (10). After wearing it the user asked for 1:1 in
-    the cockpit while keeping a smaller world scale (2) for the chase view.
+  - Scale: `WorldScale`, as in the chase view. The wearer found 2 (the old minimum) still made the
+    cockpit feel a little small, so the range now goes down to 1.
   - The pose is snapshotted per tick with the camera poses and interpolated at the frame's t, so it
     stays phase-locked to the rendered machine.
   - Verified unattended (before the tilt and near-plane change): a forced-render cockpit eye dump in
