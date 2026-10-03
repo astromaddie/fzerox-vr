@@ -3504,11 +3504,26 @@ class N64DisplayListAdapter {
             // the hull's inner faces draw over the roof. A different near re-maps the z/w the RSP
             // takes fog from, so remap fog back to the game camera's curve: for both projections
             // z/w = A - B/distance, A = (f+n)/(f-n), B = 2fn/(f-n).
-            const float nearZ = (pose.nearZ > 2.0f) ? 2.0f : pose.nearZ;
-            const float farZ = pose.farZ;
-            if (farZ > pose.nearZ && pose.nearZ > 0.0f && nearZ > 0.0f) {
-                const float aGame = (farZ + pose.nearZ) / (farZ - pose.nearZ);
-                const float bGame = 2.0f * farZ * pose.nearZ / (farZ - pose.nearZ);
+            // Far plane 4x the game camera's. At near 2 the backdrop (7000 units, far 8192) sits within
+            // ~8e-5 of z/w = 1, about the matrices' s15.16 rounding, so its vertices crossed the far
+            // plane from frame to frame and whole triangles popped (measured on the Frame,
+            // GDX_VR_DIAG_GEOM: far-plane vertices 0..112 per eye and unstable at 1x, 0 at 4x). 4x
+            // restores a margin close to the chase view's (4.5e-4 vs 6.7e-4); fog is remapped to the
+            // game camera's own near and far below.
+            // GDX_VR_COCKPIT_NEAR / GDX_VR_COCKPIT_FAR_SCALE: diagnostic overrides of this projection.
+            static const float sDiagNear = [] {
+                const char* e = std::getenv("GDX_VR_COCKPIT_NEAR");
+                return (e != nullptr && e[0] != '\0') ? std::strtof(e, nullptr) : 0.0f;
+            }();
+            static const float sDiagFarScale = [] {
+                const char* e = std::getenv("GDX_VR_COCKPIT_FAR_SCALE");
+                return (e != nullptr && e[0] != '\0') ? std::strtof(e, nullptr) : 4.0f;
+            }();
+            const float nearZ = sDiagNear > 0.0f ? sDiagNear : ((pose.nearZ > 2.0f) ? 2.0f : pose.nearZ);
+            const float farZ = pose.farZ * (sDiagFarScale > 0.0f ? sDiagFarScale : 4.0f);
+            if (pose.farZ > pose.nearZ && farZ > nearZ && pose.nearZ > 0.0f && nearZ > 0.0f) {
+                const float aGame = (pose.farZ + pose.nearZ) / (pose.farZ - pose.nearZ);
+                const float bGame = 2.0f * pose.farZ * pose.nearZ / (pose.farZ - pose.nearZ);
                 const float aEye = (farZ + nearZ) / (farZ - nearZ);
                 const float bEye = 2.0f * farZ * nearZ / (farZ - nearZ);
                 gGdxVrEyeFogScale = bGame / bEye;
@@ -9144,6 +9159,22 @@ extern "C" void gdx_gfx_run(void* dl, size_t dl_size, GdxTaskUcode taskUcode) {
             c->interp->StartFrame();
             c->interp->Run(reinterpret_cast<Gfx*>(c->commands), {});
             gdx_perf_sub_end(GDX_PERF_SUB_IRUN);
+            // GDX_VR_DIAG_GEOM=<n>: log the first n eye renders' far-plane and clip counts.
+            {
+                static const long sDiagGeom = [] {
+                    const char* e = std::getenv("GDX_VR_DIAG_GEOM");
+                    return (e != nullptr && e[0] != '\0') ? std::strtol(e, nullptr, 10) : 0L;
+                }();
+                static long sDiagGeomLogged = 0;
+                if (sDiagGeomLogged < sDiagGeom && gGdxVrEyeClipNotReject) {
+                    const auto& g = c->interp->GetGeometryDiagnostics();
+                    gdx_port_logf("[vr-geom] n=%ld replay=%d far_verts=%llu clip_rej=%llu emitted=%llu max_ndc_z=%.6f\n",
+                                  sDiagGeomLogged, c->replays, (unsigned long long)g.verticesOutsideFar,
+                                  (unsigned long long)g.trianglesClipRejected, (unsigned long long)g.trianglesEmitted,
+                                  g.maxNdcZ);
+                    sDiagGeomLogged++;
+                }
+            }
             c->replays++;
             return static_cast<unsigned>(c->interp->GetGameFramebufferTexture());
         };

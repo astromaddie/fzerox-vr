@@ -294,6 +294,9 @@ Measured on the Frame (72 Hz runtime default, headset in standby, forced renderi
 | `GDX_VR_DUMP_FRAME=<n>` | Write both eyes (`vr-eye<e>-<n>.bmp`) and the HUD rendered over black and over white (`vr-hud-black.bmp`, `vr-hud-white.bmp`; the two inputs of the alpha-recovery shader) of stereo frame n; each dump logs its % fully transparent pixels. |
 | `GDX_VR_DIAG_YAW=<deg>` | Turn the tracked head about LOCAL +y, to capture head turns unattended. |
 | `GDX_VR_DUMP_ON_SPRITE=1` | Dump the eyes of the first stereo frame that places a world sprite (`vr-sprite-eye<e>.bmp`) and the HUD of the first tick that draws a HUD sprite (`vr-sprite-hud.bmp`). |
+| `GDX_VR_DUMP_COUNT=<k>` | With `GDX_VR_DUMP_FRAME`, dump k consecutive stereo frames (left eye only when k > 1). Each dump is a synchronous readback, so dumped frames are several ticks apart. |
+| `GDX_VR_DIAG_GEOM=<n>` | Log the first n cockpit eye renders' far-plane vertex count, clip-rejected and emitted triangles (`[vr-geom]`). |
+| `GDX_VR_COCKPIT_NEAR=<units>`, `GDX_VR_COCKPIT_FAR_SCALE=<x>` | Override the cockpit projection's near plane (default 2) and far multiple (default 4), for experiments. |
 | `GDX_PERF=1` | Makes the `logic` and `xlate` stages of `[vr-perf]` real (they come from the port's GDX_PERF telemetry; they read 0.00 otherwise). |
 
 `[vr-perf]` is logged every 10 s while a session runs (sfvr_perf, the cross-port format):
@@ -398,9 +401,13 @@ edits all of these except `Stereo` and `WideCull`.
     (the whole scene fogged), so the bridge computes `Interpreter::SetVrFogRemap` per eye: both
     projections give z/w = A - B/distance, and fog reads `bias + k*(z/w)` with k = B_game/B_eye,
     bias = A_game - k*A_eye. That is exactly the game camera's fog at every distance.
-  - Open: distant backdrop buildings flickered in cockpit view (seen with near 2). Suspect depth
-    precision (24-bit depth, 8x worse than at near 16) or the interpreter's far-plane rejection
-    (`z > w`). Not yet diagnosed.
+  - Far plane 4x the game camera's. With near 2 the backdrop (7000 units, far 8192) sat within ~8e-5
+    of z/w = 1, about the matrices' s15.16 rounding, so its vertices crossed the far plane from frame
+    to frame and whole triangles popped ("skybox buildings flicker", 2026-10-03 wear). Measured on
+    the Frame with `GDX_VR_DIAG_GEOM` in the attract demo: far-plane vertices per left-eye render
+    0..112, mean 28.8, unstable in 65 of 750 frames at 1x; 0 in every frame at 4x, with the same
+    triangle count. Not depth precision: the backdrop is drawn without Z. The fog remap uses each
+    projection's own near and far.
   - Clip, not reject: the machines are drawn with the F3DEX2.Rej microcode, which the interpreter
     emulates by dropping any triangle with a vertex behind the eye, inside the near plane or past
     twice the viewport. From the roof, a hull face hit that as soon as one corner left the view, so
