@@ -140,6 +140,19 @@ def quad(out, part, a, b, c, d):
 DASH_BOTTOM, DASH_RISE, DASH_LEAN_DEG, DASH_SHELF = -12.0, 18.0, 25.0, 10.0
 
 
+def sill_lamp_frame(cab, side):
+    """Centre, text axis (the viewer's right) and up axis of a sill lamp; side +1 = the viewer's left."""
+    hw, sill, z0, z1 = cab["hw"], cab["sill"], cab["z0"], cab["z1"]
+    zd = z1 - 0.35 * (z1 - z0)
+    tilt = (-side * 0.45, 0.9, 0.0)
+    n = math.sqrt(tilt[0] ** 2 + tilt[1] ** 2)
+    tilt = (tilt[0] / n, tilt[1] / n, 0.0)
+    along = (0.0, 0.0, float(side))  # facing the centreline: forward on the left sill, back on the right
+    # Centred on the cabin axis: cabin_geometry's output is shifted by cx afterwards.
+    centre = (side * (hw - 8) - side * 0.4, sill - 2.0, zd - 10.0)
+    return centre, along, tilt
+
+
 def cabin_geometry(cab, generic):
     hw, fl, sill, top, z0, z1 = cab["hw"], cab["floor"], cab["sill"], cab["top"], cab["z0"], cab["z1"]
     L = z1 - z0
@@ -165,19 +178,15 @@ def cabin_geometry(cab, generic):
     quad(out, P["DASH"], (-hw, yb, zd), (hw, yb, zd), (hw, yt, zt), (-hw, yt, zt))
     quad(out, P["DASH"], (-hw, yt, zt), (hw, yt, zt), (hw, yt, zt + DASH_SHELF), (-hw, yt, zt + DASH_SHELF))
     quad(out, P["WALL"], (-hw, fl, zd), (hw, fl, zd), (hw, yb, zd), (-hw, yb, zd))  # below the face
-    # Three warning lamps along the bottom of the face (on the shelf they were seen edge-on), as the
-    # viewer sees them: low energy at the far left (the host's "CHECK ENGINE" label under it), then
-    # racer behind and boost on the right ("BOOST READY" under it); the viewer's right is model -x.
-    # The C side colours them every tick; gdx_openxr.cpp kDashLabels must match these positions.
-    lean = math.radians(DASH_LEAN_DEG)
-    up_face = (math.cos(lean), math.sin(lean))    # (y, z) up the face
-    normal = (math.sin(lean), -math.cos(lean))    # (y, z) towards the viewer
-    yc, zc = (yb + yt) / 2, (zd + zt) / 2
-    for across, v, part in ((-0.78, -4.5, "LAMP_ENERGY"), (0.28, -4.5, "LAMP_BEHIND"), (0.46, -4.5, "LAMP_BOOST")):
-        lx = -across * hw
-        def pt(du, dv):
-            return (lx + du, yc + (v + dv) * up_face[0] + 0.8 * normal[0], zc + (v + dv) * up_face[1] + 0.8 * normal[1])
-        quad(out, P[part], pt(-3, -1.5), pt(3, -1.5), pt(3, 1.5), pt(-3, 1.5))
+    # Warning lamps on the sills' inner lips, just behind the dash, in the viewer's peripheral vision:
+    # low energy on the left sill (the host's "CHECK ENGINE" label under it), boost on the right
+    # ("BOOST READY"). Model +x is the viewer's left. The C side colours them every tick; the host's
+    # kSillLabels and SillLampFrame() must match this placement. (There is no racer-behind lamp: the
+    # game's own CHECK warning and the rear-view mirror already cover it.)
+    for side, part in ((1, "LAMP_ENERGY"), (-1, "LAMP_BOOST")):
+        c, along, tilt = sill_lamp_frame(cab, side)
+        quad(out, P[part], *[tuple(c[i] + tilt[i] * 1.2 + along[i] * du + tilt[i] * dv for i in range(3))
+                             for du, dv in ((-4, 1.2), (4, 1.2), (4, -1.2), (-4, -1.2))])
     if generic:
         zf = z1 - 4
         zn = z1 + 0.25 * L

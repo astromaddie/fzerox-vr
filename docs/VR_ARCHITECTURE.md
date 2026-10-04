@@ -463,12 +463,13 @@ edits all of these except `Stereo` and `WideCull`.
       them with the minimap part of it. `DashHudSize` (0.45; first wear found full size
       too large) scales them. Only portraits, lap, position and centre messages still float (one
       crop). Crops assume OpenGL bottom-up rows (`HudRect`).
-    - Three warning lamps along the bottom of the dash face (cabin geometry, unlit, coloured per tick in
-      `gdx_cabin_lamps`): red for energy under 25% (faster under 10%), amber for a racer within the
-      game's "CHECK" distance (3000; faster under 1000), green while boost is available (flashing
-      while boosting). Labels beside them, drawn once in a 5x7 pixel font into a small swapchain
-      and shown small, centred under their lamps, only while the lamp is lit (`gGdxVrCabinLamp`):
-      "CHECK ENGINE" blinks with the low-energy lamp, "BOOST READY" shows with the boost lamp.
+    - Warning lamps on the sills' inner lips just behind the dash (cabin geometry, unlit, coloured
+      per tick in `gdx_cabin_lamps`): red on the left sill for energy under 25% (blinking, faster
+      under 10%), green on the right while boost is available (flashing while boosting). Labels under
+      them, drawn once in a 5x7 pixel font into a small swapchain and shown as quads only while their
+      lamp is lit (`gGdxVrCabinLamp`): "CHECK ENGINE" and "BOOST READY". The user picked the sills
+      from three offline-rendered placements (glare-shield strip, mirror/boost bar/pod, sills). An
+      amber racer-behind lamp was dropped: the game's own CHECK warning and the mirror cover it.
     - Rear-view mirror (`CabinMirror`, on): a third world replay per tick from the cockpit anchor
       raised 4 model units above the canopy top (the cabin's bulkhead fills it otherwise), turned
       180 degrees, 60 x 20 degree FOV, 768x256, copied flipped left to right into its own swapchain

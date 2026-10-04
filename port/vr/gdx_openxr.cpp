@@ -2039,34 +2039,23 @@ void HudFloatingCrop(XrCompositionLayerQuad* q, const HudCrop& c) {
     q->size = { panelW * r.extent.width / s.hud.width, panelH * r.extent.height / s.hud.height };
 }
 
-// Pose and size a quad lying on the cabin dash face (or tilted from it): across in dash half-widths
-// (+ = viewer's right), along in model units up the face from its centre, sizes in model units. The
-// pose goes from the machine's body frame through the cockpit eye anchor into LOCAL tracking space.
-void PlaceOnDash(XrCompositionLayerQuad* q, const float dashCentre[3], float halfWidth, float across, float along,
-                 float widthModel, float heightModel, float elevationDeg) {
+// Pose and size a quad fixed to the followed machine: centre, its text axis (x) and up axis (y) in
+// model space -- components along the machine's model +x, up and forward -- and its size, all model
+// units. The quad faces along x cross y. The pose goes from the machine's body frame through the
+// cockpit eye anchor into LOCAL tracking space.
+void PlaceOnBody(XrCompositionLayerQuad* q, const float c[3], const float x[3], const float y[3], float widthModel,
+                 float heightModel) {
     State& s = S();
     const State::CockpitBody& b = s.cockpitBody;
-    const float faceY = std::sin(kDashFaceDeg * 3.14159265f / 180.0f); // dash normal, in (up, forward)
-    const float faceZ = std::cos(kDashFaceDeg * 3.14159265f / 180.0f);
-    const float e = elevationDeg * 3.14159265f / 180.0f;
-    // Panel frame in (up, forward): Y up its face, Z its normal (towards the viewer).
-    const float yUp = std::cos(e), yFwd = std::sin(e);
-    const float zUp = std::sin(e), zFwd = -std::cos(e);
-    // Where it meets the dash: along the face from its centre, lifted off it; a panel standing up
-    // from the face rests on that point, so its centre rises half its height up its own face.
-    float mUp = dashCentre[1] + along * faceZ + kDashLift * faceY;
-    float mFwd = dashCentre[2] + along * faceY - kDashLift * faceZ;
-    if (elevationDeg < kDashFaceDeg - 1.0f) {
-        mUp += 0.5f * heightModel * yUp;
-        mFwd += 0.5f * heightModel * yFwd;
-    }
-    const float mx = dashCentre[0] - across * halfWidth;
-    const Vec3 X = { -b.side.x, -b.side.y, -b.side.z };
-    const Vec3 Y = { b.up.x * yUp + b.fwd.x * yFwd, b.up.y * yUp + b.fwd.y * yFwd, b.up.z * yUp + b.fwd.z * yFwd };
-    const Vec3 Z = { b.up.x * zUp + b.fwd.x * zFwd, b.up.y * zUp + b.fwd.y * zFwd, b.up.z * zUp + b.fwd.z * zFwd };
-    const Vec3 world = { b.pos.x + 0.1f * (b.side.x * mx + b.up.x * mUp + b.fwd.x * mFwd),
-                         b.pos.y + 0.1f * (b.side.y * mx + b.up.y * mUp + b.fwd.y * mFwd),
-                         b.pos.z + 0.1f * (b.side.z * mx + b.up.z * mUp + b.fwd.z * mFwd) };
+    const auto toWorld = [&](const float m[3]) {
+        return Vec3{ b.side.x * m[0] + b.up.x * m[1] + b.fwd.x * m[2], b.side.y * m[0] + b.up.y * m[1] + b.fwd.y * m[2],
+                     b.side.z * m[0] + b.up.z * m[1] + b.fwd.z * m[2] };
+    };
+    const Vec3 X = toWorld(x);
+    const Vec3 Y = toWorld(y);
+    const Vec3 Z = { X.y * Y.z - X.z * Y.y, X.z * Y.x - X.x * Y.z, X.x * Y.y - X.y * Y.x };
+    const Vec3 o = toWorld(c);
+    const Vec3 world = { b.pos.x + 0.1f * o.x, b.pos.y + 0.1f * o.y, b.pos.z + 0.1f * o.z };
     const Quat yaw = s.recenterValid ? s.recenterYaw : Quat{ 0.0f, 0.0f, 0.0f, 1.0f };
     const Vec3 origin = s.recenterValid ? Vec3{ s.recenterPos.x, s.heightAnchor, s.recenterPos.z } : Vec3{ 0, 0, 0 };
     const Pose p = WorldToTracking(s.cockpitAnchor, s.cockpitUnitsPerMeter, yaw, origin, world, X, Y, Z);
@@ -2076,6 +2065,26 @@ void PlaceOnDash(XrCompositionLayerQuad* q, const float dashCentre[3], float hal
     q->pose.orientation = { p.orientation.x, p.orientation.y, p.orientation.z, p.orientation.w };
     q->pose.position = { p.position.x, p.position.y, p.position.z };
     q->size = { 0.1f * widthModel / s.cockpitUnitsPerMeter, 0.1f * heightModel / s.cockpitUnitsPerMeter };
+}
+
+// Pose and size a quad on the cabin dash face (or tilted from it): across in dash half-widths
+// (+ = viewer's right), along in model units up the face from its centre, sizes in model units.
+void PlaceOnDash(XrCompositionLayerQuad* q, const float dashCentre[3], float halfWidth, float across, float along,
+                 float widthModel, float heightModel, float elevationDeg) {
+    const float faceY = std::sin(kDashFaceDeg * 3.14159265f / 180.0f); // dash normal, in (up, forward)
+    const float faceZ = std::cos(kDashFaceDeg * 3.14159265f / 180.0f);
+    const float e = elevationDeg * 3.14159265f / 180.0f;
+    const float y[3] = { 0.0f, std::cos(e), std::sin(e) }; // up the panel's face
+    // Where it meets the dash: along the face from its centre, lifted off it; a panel standing up
+    // from the face rests on that point, so its centre rises half its height up its own face.
+    float c[3] = { dashCentre[0] - across * halfWidth, dashCentre[1] + along * faceZ + kDashLift * faceY,
+                   dashCentre[2] + along * faceY - kDashLift * faceZ };
+    if (elevationDeg < kDashFaceDeg - 1.0f) {
+        c[1] += 0.5f * heightModel * y[1];
+        c[2] += 0.5f * heightModel * y[2];
+    }
+    const float x[3] = { -1.0f, 0.0f, 0.0f }; // the viewer's right is model -x
+    PlaceOnBody(q, c, x, y, widthModel, heightModel);
 }
 
 // A dash readout: a crop of the race HUD on the dash face.
@@ -2088,29 +2097,34 @@ void HudDashPanel(XrCompositionLayerQuad* q, const DashPanel& d, const float das
     q->subImage.imageRect = r;
 }
 
-// The warning lamps' labels, centred under their lamps (tools/gen_vr_cabin_table.py: the low-energy
-// lamp at -0.78, boost at 0.46, both 4.5 model units down the face, 3 tall): "CHECK ENGINE" blinks
-// with the low-energy lamp, "BOOST READY" shows with the boost lamp. Small fixed text (first look:
-// beside the lamps at dash-width scale it was too large and overlapped the dash readouts).
-struct DashLabel {
+// The warning lamps' labels, under the lamps on the sills' inner lips (tools/gen_vr_cabin_table.py
+// sill_lamp_frame, which this mirrors): "CHECK ENGINE" blinks with the low-energy lamp on the left
+// sill, "BOOST READY" shows with the boost lamp on the right. Small fixed text (first look: at
+// dash-width scale it was too large); the user picked the sills from three placements.
+struct SillLabel {
     int row;  // kLabelText row
     int lamp; // gGdxVrCabinLamp index that shows it
-    float across, along, height; // height in model units (the text row, padding included)
+    int side; // +1: the viewer's left sill (model +x), -1: the right
 };
-const DashLabel kDashLabels[] = {
-    { 0, 0, -0.78f, -7.4f, 1.3f },
-    { 1, 2, 0.46f, -7.4f, 1.3f },
-};
-constexpr int kDashLabelCount = sizeof(kDashLabels) / sizeof(kDashLabels[0]);
+const SillLabel kSillLabels[] = { { 0, 0, 1 }, { 1, 2, -1 } };
+constexpr int kSillLabelCount = sizeof(kSillLabels) / sizeof(kSillLabels[0]);
+constexpr float kSillLabelHeight = 1.0f; // model units, padding included
 
-void DashLabelPanel(XrCompositionLayerQuad* q, const DashLabel& l, const float dashCentre[3], float halfWidth) {
+void SillLabelPanel(XrCompositionLayerQuad* q, const SillLabel& l, const float dashCentre[3], float halfWidth) {
     State& s = S();
     const int w = LabelTexelWidth(l.row);
+    // The generator's frame: the sill is 3 above the dash centre, the dash's foot 9 * tan(lean) behind it.
+    const float sill = dashCentre[1] + 3.0f;
+    const float zd = dashCentre[2] - 9.0f * std::tan(kDashFaceDeg * 3.14159265f / 180.0f);
+    const float tn = std::sqrt(0.45f * 0.45f + 0.9f * 0.9f);
+    const float tilt[3] = { -l.side * 0.45f / tn, 0.9f / tn, 0.0f };
+    const float along[3] = { 0.0f, 0.0f, (float)l.side };
+    const float c[3] = { dashCentre[0] + l.side * (halfWidth - 8.0f) - l.side * 0.4f - tilt[0] * 1.3f,
+                         sill - 2.0f - tilt[1] * 1.3f, zd - 10.0f };
+    PlaceOnBody(q, c, along, tilt, kSillLabelHeight * w / kLabelHeight, kSillLabelHeight);
     // Row 0 is the picture's top row; GL images count rows from the bottom.
-    const XrRect2Di r = { { 0, s.labels.height - (l.row + 1) * kLabelHeight }, { w, kLabelHeight } };
-    PlaceOnDash(q, dashCentre, halfWidth, l.across, l.along, l.height * w / kLabelHeight, l.height, kDashFaceDeg);
     q->subImage.swapchain = s.labels.handle;
-    q->subImage.imageRect = r;
+    q->subImage.imageRect = { { 0, s.labels.height - (l.row + 1) * kLabelHeight }, { w, kLabelHeight } };
 }
 
 // Fills parts[] (dash panels, then the floating crop) and appends them to layers. False (nothing
@@ -2129,10 +2143,10 @@ bool AddCabinHudLayers(XrCompositionLayerQuad* parts, const XrCompositionLayerBa
     for (int i = 0; i <= kDashPanelCount; i++) {
         layers[(*count)++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&parts[i]);
     }
-    for (int i = 0; i < kDashLabelCount; i++) {
-        if (s.labels.hasImage && gGdxVrCabinLamp[kDashLabels[i].lamp] != 0) {
+    for (int i = 0; i < kSillLabelCount; i++) {
+        if (s.labels.hasImage && gGdxVrCabinLamp[kSillLabels[i].lamp] != 0) {
             XrCompositionLayerQuad& q = parts[kDashPanelCount + 2 + i];
-            DashLabelPanel(&q, kDashLabels[i], centre, halfWidth);
+            SillLabelPanel(&q, kSillLabels[i], centre, halfWidth);
             layers[(*count)++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&q);
         }
     }
