@@ -134,6 +134,12 @@ def quad(out, part, a, b, c, d):
     out.append((part, (a, c, d)))
 
 
+# Dash shape, model units: the face runs from DASH_BOTTOM to DASH_BOTTOM + DASH_RISE about the sill,
+# leaning back DASH_LEAN_DEG from vertical; a DASH_SHELF-deep shelf tops it. (First look: the earlier
+# near-horizontal dash should face the player.)
+DASH_BOTTOM, DASH_RISE, DASH_LEAN_DEG, DASH_SHELF = -12.0, 18.0, 25.0, 10.0
+
+
 def cabin_geometry(cab, generic):
     hw, fl, sill, top, z0, z1 = cab["hw"], cab["floor"], cab["sill"], cab["top"], cab["z0"], cab["z1"]
     L = z1 - z0
@@ -150,19 +156,27 @@ def cabin_geometry(cab, generic):
     hr = 0.35 * hw
     quad(out, P["HEADREST"], (-hr, sill - 6, zr + 8), (hr, sill - 6, zr + 8), (hr, top - 12, zr + 8), (-hr, top - 12, zr + 8))
     quad(out, P["HEADREST"], (-hr, top - 12, zr), (hr, top - 12, zr), (hr, top - 12, zr + 8), (-hr, top - 12, zr + 8))
+    # The dash: a face towards the viewer, leaning back DASH_LEAN_DEG from vertical (DASH_RISE tall),
+    # topped by a shelf. The game's own energy meter, timer, minimap and speed are shown on the face
+    # (the VR host places crops of the race HUD there; the C++ side's kDashFaceDeg must match).
     zd = z1 - 0.35 * L
-    quad(out, P["DASH"], (-hw, sill - 4, zd), (hw, sill - 4, zd), (hw, sill + 4, zd + 14), (-hw, sill + 4, zd + 14))
-    # No gauges: the game's own energy meter, speed, timer and minimap are shown on this dash face
-    # (the VR host places crops of the race HUD there). Three warning lamps sit along its front edge,
-    # left to right as the viewer sees them (the viewer's right is model -x): low energy, racer
-    # behind, boost; the C side colours them from game state every tick.
-    for across, part in ((-0.25, "LAMP_ENERGY"), (0.0, "LAMP_BEHIND"), (0.25, "LAMP_BOOST")):
+    yb, yt = sill + DASH_BOTTOM, sill + DASH_BOTTOM + DASH_RISE
+    zt = zd + DASH_RISE * math.tan(math.radians(DASH_LEAN_DEG))
+    quad(out, P["DASH"], (-hw, yb, zd), (hw, yb, zd), (hw, yt, zt), (-hw, yt, zt))
+    quad(out, P["DASH"], (-hw, yt, zt), (hw, yt, zt), (hw, yt, zt + DASH_SHELF), (-hw, yt, zt + DASH_SHELF))
+    quad(out, P["WALL"], (-hw, fl, zd), (hw, fl, zd), (hw, yb, zd), (-hw, yb, zd))  # below the face
+    # Three warning lamps along the bottom of the face (on the shelf they were seen edge-on), as the
+    # viewer sees them: low energy under the energy meter and timer, then racer behind and boost
+    # under the speed readout (the viewer's right is model -x). The C side colours them every tick.
+    lean = math.radians(DASH_LEAN_DEG)
+    up_face = (math.cos(lean), math.sin(lean))    # (y, z) up the face
+    normal = (math.sin(lean), -math.cos(lean))    # (y, z) towards the viewer
+    yc, zc = (yb + yt) / 2, (zd + zt) / 2
+    for across, v, part in ((-0.5, -6.5, "LAMP_ENERGY"), (0.38, -6.0, "LAMP_BEHIND"), (0.62, -6.0, "LAMP_BOOST")):
         lx = -across * hw
-        # A small raised lens, 0.8 model units above the dash surface near its front edge.
-        za, zb = zd + 10.0, zd + 13.0
-        ya = sill - 4 + 8 * (za - zd) / 14 + 0.8
-        yb = sill - 4 + 8 * (zb - zd) / 14 + 0.8
-        quad(out, P[part], (lx - 3, ya, za), (lx + 3, ya, za), (lx + 3, yb, zb), (lx - 3, yb, zb))
+        def pt(du, dv):
+            return (lx + du, yc + (v + dv) * up_face[0] + 0.8 * normal[0], zc + (v + dv) * up_face[1] + 0.8 * normal[1])
+        quad(out, P[part], pt(-3, -1.5), pt(3, -1.5), pt(3, 1.5), pt(-3, 1.5))
     if generic:
         zf = z1 - 4
         zn = z1 + 0.25 * L
@@ -268,7 +282,7 @@ def main():
         "    unsigned short triStart, triCount;",
         "    unsigned short glassStart, glassCount; /* into kGdxCabinGlass: replaced canopy triangles */",
         "    unsigned char glassRgb[3];",
-        "    short dash[3];      /* centre of the dash face; it rises (0, 8, 14) model units from back to front */",
+        "    short dash[3];      /* centre of the dash face, which leans back 25 degrees from vertical */",
         "    short dashHalfWidth;",
         "} GdxCabinMachine;",
         "",
@@ -281,7 +295,9 @@ def main():
         lines.append(f"    {{ {mc['kind']}, {{ {', '.join(map(str, box))} }}, {{ {', '.join(str(r(v)) for v in mc['seat'])} }}, "
                      f"{mc['tri'][0]}, {mc['tri'][1]}, {mc['glass'][0]}, {mc['glass'][1]}, "
                      f"{{ {', '.join(map(str, mc['rgb']))} }}, "
-                     f"{{ {r(c['cx'])}, {r(c['sill'])}, {r(c['z1'] - 0.35 * (c['z1'] - c['z0']) + 7)} }}, {r(c['hw'])} }}, /* {mc['name']} */")
+                     f"{{ {r(c['cx'])}, {r(c['sill'] + DASH_BOTTOM + DASH_RISE / 2)}, "
+                     f"{r(c['z1'] - 0.35 * (c['z1'] - c['z0']) + DASH_RISE / 2 * math.tan(math.radians(DASH_LEAN_DEG)))} }}, "
+                     f"{r(c['hw'])} }}, /* {mc['name']} */")
     lines += ["};", "", f"static const GdxCabinTri kGdxCabinTris[{len(tris_out)}] = {{"]
     for part, a, b, c, n in tris_out:
         vs = ", ".join("{ " + ", ".join(str(r(x)) for x in v) + " }" for v in (a, b, c))

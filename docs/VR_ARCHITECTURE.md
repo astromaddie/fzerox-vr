@@ -455,12 +455,15 @@ edits all of these except `Stereo` and `WideCull`.
     drawn). `CabinSeatUp` / `CabinSeatForward` (+-10 world units) adjust the seat.
   - **Dash** (cabin only), aiming at a real dashboard:
     - HUD crops (`imageRect`) of the race HUD swapchain as quad layers, posed from the machine's body
-      frame through the cockpit eye anchor into LOCAL (`WorldToTracking`; `kDashPanels`): energy
-      (front left) and timer (behind it) and speed (right) lie on the dash face; the minimap stands
-      upright in the centre like a console screen. `DashHudSize` (0.45; first wear found full size
+      frame through the cockpit eye anchor into LOCAL (`WorldToTracking`; `kDashPanels`), all on the
+      dash face: energy over the timer on the left, the minimap in the centre, speed on the right. The
+      face leans back 25 degrees from vertical towards the viewer, with a shelf on top
+      (`DASH_LEAN_DEG` in the generator, `kDashFaceDeg` here); the first offline render had a
+      near-horizontal dash and an upright minimap standing off it, and the user wanted the dash facing
+      them with the minimap part of it. `DashHudSize` (0.45; first wear found full size
       too large) scales them. Only portraits, lap, position and centre messages still float (one
       crop). Crops assume OpenGL bottom-up rows (`HudRect`).
-    - Three warning lamps along the dash's front edge (cabin geometry, unlit, coloured per tick in
+    - Three warning lamps along the bottom of the dash face (cabin geometry, unlit, coloured per tick in
       `gdx_cabin_lamps`): red for energy under 25% (faster under 10%), amber for a racer within the
       game's "CHECK" distance (3000; faster under 1000), green while boost is available (flashing
       while boosting).

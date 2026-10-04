@@ -1899,18 +1899,18 @@ constexpr HudCrop kHudSpeed = { -332, 812, -100, 884 };
 constexpr HudCrop kHudFloatLeft = { 0, 0, -496, 960 }; // portraits, lap, position, centre messages
 // Dash layout, as the viewer sees it. across: half-widths from the dash centre (+ = viewer's right);
 // along: model units up the dash slope from its centre; width: half-widths at DashHudSize 1;
-// elevation: the panel normal's angle above "straight back at the viewer" (the dash face is 60.3
-// degrees; a smaller angle stands the panel up like a console screen, resting on the dash).
+// elevation: the panel normal's angle above "straight back at the viewer"; panels lie on the dash
+// face, which leans back 25 degrees from vertical (tools/gen_vr_cabin_table.py DASH_LEAN_DEG).
 struct DashPanel {
     const HudCrop* crop;
     float across, along, width, elevationDeg;
 };
-constexpr float kDashFaceDeg = 60.255f; // atan2(14, 8): the dash rises (0, 8, 14)
+constexpr float kDashFaceDeg = 25.0f;
 const DashPanel kDashPanels[] = {
-    { &kHudEnergy, -0.50f, 3.0f, 0.95f, kDashFaceDeg },
-    { &kHudTimer, -0.50f, -4.0f, 0.85f, kDashFaceDeg },
-    { &kHudMinimap, 0.0f, 1.0f, 0.45f, 22.0f },
-    { &kHudSpeed, 0.50f, 0.0f, 0.75f, kDashFaceDeg },
+    { &kHudEnergy, -0.50f, 4.0f, 0.95f, kDashFaceDeg },
+    { &kHudTimer, -0.50f, -3.0f, 0.85f, kDashFaceDeg },
+    { &kHudMinimap, 0.0f, 0.0f, 0.45f, kDashFaceDeg },
+    { &kHudSpeed, 0.50f, 1.0f, 0.75f, kDashFaceDeg },
 };
 constexpr int kDashPanelCount = sizeof(kDashPanels) / sizeof(kDashPanels[0]);
 constexpr float kDashLift = 0.6f; // model units above the dash face
