@@ -389,8 +389,8 @@ edits all of these except `Stereo` and `WideCull`.
   (below). Stick clicks are unbound. Index/Touch bindings remain as fallbacks. Triggers, bumpers and
   grips are not final: gameplay remapping is a pending decision and was deliberately not touched.
 - Race HUD layer: rendered at `gEnhancements.VR.HudAspect` (default 1.5:1) with the widescreen HUD
-  layout forced on, so edge-anchored elements sit at the panel sides; shown head-locked 1.5 m ahead,
-  `gEnhancements.VR.HudHeight` metres tall (default 1.2). Coverage is recovered by rendering the HUD
+  layout forced on, so edge-anchored elements sit at the panel sides; shown 1.5 m ahead of the head,
+  following its yaw and pitch but never its roll (`NoRollPose`), `gEnhancements.VR.HudHeight` metres tall (default 1.2). Coverage is recovered by rendering the HUD
   over black and over white and combining on the GPU.
 - Recentre: see "System layer" below. Chase view is levelled against the track's up
   (`Camera.racerBasis.y`; `gEnhancements.VR.LevelPitch`, default 1) while still banking with it.
