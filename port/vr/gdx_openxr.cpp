@@ -292,6 +292,8 @@ struct State {
     // In-headset VR menu: the G-Diffuser menu on the flat quad (docs/VR_ARCHITECTURE.md). Presentation
     // is forced flat while it is visible; game input is withheld; XR actions drive its navigation.
     bool menuOpen = false;
+    bool hudHeadValid = false; // hudHead: this frame's head pose (LOCAL) with the roll taken out
+    Pose hudHead{};
     bool menuPausedGame = false; // we sent START to pause a race when the menu opened
     bool menuLaunchChecked = false; // the menu's saved-open state was cleared for this VR launch
     int cameraModeSeen = -1;     // gEnhancements.VR.CameraMode as last applied to `cockpit`
@@ -2021,7 +2023,25 @@ XrRect2Di HudRect(const HudCrop& c) {
     return { { x0, h - y1 }, { x1 - x0, y1 - y0 } };
 }
 
-// The floating part: a crop of the head-locked HUD panel, at the place it has in the full panel.
+// Pose a head-following HUD quad at `offset` (metres, head axes) in front of the head. It follows
+// head yaw and pitch through this frame's level head pose but never the roll (standard.md section
+// 4); without a located head it falls back to VIEW space, which does roll.
+void PlaceBeforeHead(XrCompositionLayerQuad* q, const Vec3& offset) {
+    const State& s = S();
+    if (s.hudHeadValid) {
+        const Vec3 o = Rotate(s.hudHead.orientation, offset);
+        q->space = s.localSpace;
+        q->pose.orientation = { s.hudHead.orientation.x, s.hudHead.orientation.y, s.hudHead.orientation.z,
+                                s.hudHead.orientation.w };
+        q->pose.position = { s.hudHead.position.x + o.x, s.hudHead.position.y + o.y, s.hudHead.position.z + o.z };
+    } else {
+        q->space = s.viewSpace;
+        q->pose.orientation = { 0.0f, 0.0f, 0.0f, 1.0f };
+        q->pose.position = { offset.x, offset.y, offset.z };
+    }
+}
+
+// The floating part: a crop of the head-following HUD panel, at the place it has in the full panel.
 void HudFloatingCrop(XrCompositionLayerQuad* q, const HudCrop& c) {
     State& s = S();
     const XrRect2Di r = HudRect(c);
@@ -2029,13 +2049,11 @@ void HudFloatingCrop(XrCompositionLayerQuad* q, const HudCrop& c) {
     const float panelW = panelH * (float)s.hud.width / (float)s.hud.height;
     const float topDownY = (float)(s.hud.height - r.offset.y - r.extent.height);
     q->layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
-    q->space = s.viewSpace;
     q->eyeVisibility = XR_EYE_VISIBILITY_BOTH;
     q->subImage.swapchain = s.hud.handle;
     q->subImage.imageRect = r;
-    q->pose.orientation = { 0.0f, 0.0f, 0.0f, 1.0f };
-    q->pose.position = { ((r.offset.x + 0.5f * r.extent.width) / s.hud.width - 0.5f) * panelW,
-                         (0.5f - (topDownY + 0.5f * r.extent.height) / s.hud.height) * panelH, -kHudDistance };
+    PlaceBeforeHead(q, { ((r.offset.x + 0.5f * r.extent.width) / s.hud.width - 0.5f) * panelW,
+                         (0.5f - (topDownY + 0.5f * r.extent.height) / s.hud.height) * panelH, -kHudDistance });
     q->size = { panelW * r.extent.width / s.hud.width, panelH * r.extent.height / s.hud.height };
 }
 
@@ -2708,6 +2726,15 @@ void PresentStereoTick(const StereoCallbacks& cb) {
                                                   q.w * p.w - q.x * p.x - q.y * p.y - q.z * p.z };
                 }
             }
+            // The head between the two eyes, level: the head-following HUD quads hang off it.
+            s.hudHeadValid = poseOk;
+            if (poseOk) {
+                const XrPosef& l = views[0].pose;
+                const XrPosef& r = views[1].pose;
+                s.hudHead = NoRollPose({ { l.orientation.x, l.orientation.y, l.orientation.z, l.orientation.w },
+                                         { 0.5f * (l.position.x + r.position.x), 0.5f * (l.position.y + r.position.y),
+                                           0.5f * (l.position.z + r.position.z) } });
+            }
             if (poseOk) {
                 const float t = s.scheduler.InterpT((double)s.pending.state.predictedDisplayTime * 1e-9);
                 for (int e = 0; e < 2; e++) {
@@ -2799,13 +2826,11 @@ void PresentStereoTick(const StereoCallbacks& cb) {
                             // energy, timer, minimap and speed on the dash, the rest floating
                         } else if (s.hud.hasImage) {
                             hudLayer.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
-                            hudLayer.space = s.viewSpace;
                             hudLayer.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
                             hudLayer.subImage.swapchain = s.hud.handle;
                             hudLayer.subImage.imageRect.offset = { 0, 0 };
                             hudLayer.subImage.imageRect.extent = { s.hud.width, s.hud.height };
-                            hudLayer.pose.orientation = { 0.0f, 0.0f, 0.0f, 1.0f };
-                            hudLayer.pose.position = { 0.0f, 0.0f, -kHudDistance };
+                            PlaceBeforeHead(&hudLayer, { 0.0f, 0.0f, -kHudDistance });
                             const float hudHeight = SettingFloat(kSetHudHeight);
                             hudLayer.size.height = hudHeight;
                             hudLayer.size.width = hudHeight * (float)s.hud.width / (float)s.hud.height;

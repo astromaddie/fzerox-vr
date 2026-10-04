@@ -139,6 +139,21 @@ bool BeamPose(const Vec3& from, const Vec3& to, const Vec3& viewer, Pose* out, f
     return true;
 }
 
+Pose NoRollPose(const Pose& head) {
+    const Vec3 back = Rotate(head.orientation, { 0.0f, 0.0f, 1.0f });
+    Vec3 right = Cross({ 0.0f, 1.0f, 0.0f }, back);
+    if (Dot(right, right) < 1e-6f || !Normalize(&right)) {
+        right = Rotate(head.orientation, { 1.0f, 0.0f, 0.0f });
+        right.y = 0.0f;
+        if (!Normalize(&right)) {
+            return head;
+        }
+    }
+    Vec3 up = Cross(back, right);
+    Normalize(&up);
+    return { QuatFromBasis(right, up, Cross(right, up)), head.position };
+}
+
 bool AnchorFromLookAt(const Vec3& eye, const Vec3& at, const Vec3& up, Anchor* out) {
     Vec3 back = { eye.x - at.x, eye.y - at.y, eye.z - at.z };
     if (!Normalize(&back)) {

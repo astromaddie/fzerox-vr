@@ -100,6 +100,12 @@ bool RayHitsPanel(const Vec3& origin, const Vec3& dir, const Pose& panel, float 
 // beam length (the quad's height). Returns false when from == to.
 bool BeamPose(const Vec3& from, const Vec3& to, const Vec3& viewer, Pose* out, float* length);
 
+// The head pose with its roll taken out: same position and view direction, with the x axis held
+// level, so a panel placed in front of it follows head yaw and pitch but never tilts with the head
+// (standard.md section 4). Looking straight up or down, the level direction comes from the head's
+// own x axis instead.
+Pose NoRollPose(const Pose& head);
+
 } // namespace gdx_vr
 
 #endif // GDX_VR_MATH_H

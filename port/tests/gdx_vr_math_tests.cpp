@@ -322,6 +322,34 @@ static void CasePointer() {
     check("degenerate beam", !BeamPose({ 1, 1, 1 }, { 1, 1, 1 }, { 0, 0, 0 }, &beam, &len));
 }
 
+static void CaseNoRoll() {
+    // Yaw 30 degrees left, pitch 20 down, roll 25: the roll goes, the view direction stays.
+    const Quat yaw = AxisAngle({ 0, 1, 0 }, 30.0f * kPi / 180.0f);
+    const Quat pitch = AxisAngle({ 1, 0, 0 }, -20.0f * kPi / 180.0f);
+    const Quat roll = AxisAngle({ 0, 0, 1 }, 25.0f * kPi / 180.0f);
+    const auto mul = [](const Quat& a, const Quat& b) {
+        return Quat{ a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y, a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
+                     a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w, a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z };
+    };
+    const Pose head = { mul(mul(yaw, pitch), roll), { 0.1f, 1.6f, -0.2f } };
+    const Pose level = NoRollPose(head);
+    const Vec3 f0 = Rotate(head.orientation, { 0, 0, -1 });
+    const Vec3 f1 = Rotate(level.orientation, { 0, 0, -1 });
+    checkNear("no-roll keeps the view x", f1.x, f0.x, 1e-5);
+    checkNear("no-roll keeps the view y", f1.y, f0.y, 1e-5);
+    checkNear("no-roll keeps the view z", f1.z, f0.z, 1e-5);
+    checkNear("no-roll x axis is level", Rotate(level.orientation, { 1, 0, 0 }).y, 0.0, 1e-5);
+    check("no-roll up points up", Rotate(level.orientation, { 0, 1, 0 }).y > 0.9f);
+    const Pose expect = { mul(yaw, pitch), head.position };
+    const Vec3 x0 = Rotate(expect.orientation, { 1, 0, 0 });
+    const Vec3 x1 = Rotate(level.orientation, { 1, 0, 0 });
+    checkNear("no-roll equals yaw then pitch", x0.x * x1.x + x0.y * x1.y + x0.z * x1.z, 1.0, 1e-5);
+    checkNear("no-roll keeps the position", level.position.y, 1.6, 1e-6);
+    // Straight down: the level direction comes from the head's own x axis.
+    const Pose down = NoRollPose({ mul(yaw, AxisAngle({ 1, 0, 0 }, -kPi / 2)), { 0, 0, 0 } });
+    checkNear("looking down keeps the yaw", Rotate(down.orientation, { 1, 0, 0 }).x, std::cos(30.0f * kPi / 180.0f), 1e-4);
+}
+
 static void CaseWorldToTracking() {
     // Anchor: eye at (100, 50, 20) looking down world -z, up +y; 10 world units per metre.
     Anchor a;
@@ -371,6 +399,7 @@ int main() {
     CaseFixedPointFit();
     CaseDegenerate();
     CasePointer();
+    CaseNoRoll();
     CaseWorldToTracking();
     std::printf("%d checks, %d failed\n", gChecks, gFails);
     return gFails == 0 ? 0 : 1;
