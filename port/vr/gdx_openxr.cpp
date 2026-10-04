@@ -60,6 +60,7 @@ extern "C" int gGdxVrCabinActive;
 extern "C" int gdx_vr_cabin_seat(int machine, float seat[3]);
 extern "C" int gdx_vr_cabin_cut(int machine, float box[6], const short** glass, int* glassCount);
 extern "C" int gdx_vr_cabin_dash(int machine, float centre[3], float* halfWidth);
+extern "C" int gGdxVrCabinLamp[3]; // this tick's lamps: 0 low energy (blinking), 1 racer behind, 2 boost
 // port/decomp_port.c: camera 0's track up (the game's smoothed gravity-up for the followed racer).
 extern "C" void gdx_vr_camera_track_up(float out[3]);
 // port/decomp_port.c: bumped every time Race_Draw runs.
@@ -106,6 +107,8 @@ namespace {
 constexpr float kQuadDistance = 2.0f;
 constexpr float kQuadWidth = 2.4f;
 constexpr float kBeamWidth = 0.006f;    // metres: the menu pointer's laser
+constexpr int32_t kLabelWidth = 320;    // cabin dash labels: two rows of pixel-font text
+constexpr int32_t kLabelHeight = 32;
 constexpr int32_t kMirrorWidth = 768;   // cabin rear-view mirror image, 3:1
 constexpr int32_t kMirrorHeight = 256;
 constexpr float kBeamMissLength = 1.5f; // metres: laser length when it is off the menu
@@ -242,6 +245,7 @@ struct State {
     Swapchain hud;
     Swapchain beam; // solid-colour texture for the menu pointer's laser quad
     Swapchain mirror; // cabin rear-view mirror image
+    Swapchain labels; // cabin dash labels ("CHECK ENGINE", "BOOST READY"), drawn once at session start
     long long mirrorRenderedTick = -1;
     // Cabin dash HUD: the followed machine's body frame and the cockpit eye anchor of the frame being
     // built (both world units), set while the cockpit eyes are rebuilt, read when the layers go out.
@@ -568,6 +572,7 @@ void DestroySession() {
     DestroySwapchain(s.hud);
     DestroySwapchain(s.beam);
     DestroySwapchain(s.mirror);
+    DestroySwapchain(s.labels);
     if (s.localSpace != XR_NULL_HANDLE) {
         xrDestroySpace(s.localSpace);
         s.localSpace = XR_NULL_HANDLE;
@@ -748,6 +753,7 @@ void FlushHaptics() {
 }
 
 void FillSwapchain(Swapchain& sc, float r, float g, float b, float a);
+void FillLabelSwapchain(Swapchain& sc);
 Pose FlatQuadPose();
 float FlatQuadHeight();
 
@@ -1193,6 +1199,9 @@ bool CreateEverything() {
         FillSwapchain(s.beam, 0.55f, 0.85f, 1.0f, 0.9f);
     }
     CreateSwapchain(s.mirror, kMirrorWidth, kMirrorHeight, "xrCreateSwapchain(cabin mirror)");
+    if (CreateSwapchain(s.labels, kLabelWidth, kLabelHeight * 2, "xrCreateSwapchain(cabin labels)")) {
+        FillLabelSwapchain(s.labels);
+    }
     if (!CreateInput()) {
         gdx_port_logf("[openxr] controller actions unavailable; relying on SDL/Steam Input\n");
     }
@@ -1700,6 +1709,90 @@ void FillSwapchain(Swapchain& sc, float r, float g, float b, float a) {
     }
 }
 
+// 5x7 pixel font, just the letters the cabin dash labels use; each row is 5 bits, MSB on the left.
+struct Glyph {
+    char c;
+    uint8_t rows[7];
+};
+constexpr Glyph kLabelFont[] = {
+    { 'A', { 0x0E, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11 } }, { 'B', { 0x1E, 0x11, 0x11, 0x1E, 0x11, 0x11, 0x1E } },
+    { 'C', { 0x0E, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0E } }, { 'D', { 0x1E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1E } },
+    { 'E', { 0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x1F } }, { 'G', { 0x0E, 0x11, 0x10, 0x17, 0x11, 0x11, 0x0F } },
+    { 'H', { 0x11, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11 } }, { 'I', { 0x0E, 0x04, 0x04, 0x04, 0x04, 0x04, 0x0E } },
+    { 'K', { 0x11, 0x12, 0x14, 0x18, 0x14, 0x12, 0x11 } }, { 'N', { 0x11, 0x19, 0x15, 0x13, 0x11, 0x11, 0x11 } },
+    { 'O', { 0x0E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E } }, { 'R', { 0x1E, 0x11, 0x11, 0x1E, 0x14, 0x12, 0x11 } },
+    { 'S', { 0x0F, 0x10, 0x10, 0x0E, 0x01, 0x01, 0x1E } }, { 'T', { 0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04 } },
+    { 'Y', { 0x11, 0x11, 0x0A, 0x04, 0x04, 0x04, 0x04 } },
+};
+constexpr int kLabelScale = 4;              // font pixels -> texels
+constexpr int kLabelAdvance = 6 * kLabelScale; // 5 wide plus a gap
+const char* const kLabelText[2] = { "CHECK ENGINE", "BOOST READY" };
+const uint8_t kLabelRgb[2][3] = { { 255, 70, 50 }, { 90, 255, 120 } };
+
+int LabelTexelWidth(int row) {
+    return (int)std::strlen(kLabelText[row]) * kLabelAdvance - kLabelScale;
+}
+
+// Draw both labels into every image of `sc` (static: a layer keeps showing the last released image).
+// Row 0 is the top row of the picture; GL images are bottom-up, so it is written to the top texels.
+void FillLabelSwapchain(Swapchain& sc) {
+    std::vector<uint8_t> px((size_t)sc.width * (size_t)sc.height * 4u, 0);
+    for (int row = 0; row < 2; row++) {
+        const char* text = kLabelText[row];
+        for (int i = 0; text[i] != '\0'; i++) {
+            const Glyph* g = nullptr;
+            for (const Glyph& f : kLabelFont) {
+                if (f.c == text[i]) {
+                    g = &f;
+                }
+            }
+            if (g == nullptr) {
+                continue; // space
+            }
+            for (int gy = 0; gy < 7; gy++) {
+                for (int gx = 0; gx < 5; gx++) {
+                    if ((g->rows[gy] >> (4 - gx) & 1) == 0) {
+                        continue;
+                    }
+                    for (int sy = 0; sy < kLabelScale; sy++) {
+                        for (int sx = 0; sx < kLabelScale; sx++) {
+                            const int x = i * kLabelAdvance + gx * kLabelScale + sx;
+                            const int yTop = row * kLabelHeight + 2 + gy * kLabelScale + sy;
+                            const int y = sc.height - 1 - yTop; // bottom-up
+                            uint8_t* p = &px[((size_t)y * (size_t)sc.width + (size_t)x) * 4u];
+                            p[0] = kLabelRgb[row][0];
+                            p[1] = kLabelRgb[row][1];
+                            p[2] = kLabelRgb[row][2];
+                            p[3] = 255;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for (size_t i = 0; i < sc.images.size(); i++) {
+        uint32_t index = 0;
+        XrSwapchainImageAcquireInfo ai{ XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO };
+        if (!Check(xrAcquireSwapchainImage(sc.handle, &ai, &index), "xrAcquireSwapchainImage(labels)")) {
+            return;
+        }
+        XrSwapchainImageWaitInfo wi{ XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO };
+        wi.timeout = XR_INFINITE_DURATION;
+        if (!Check(xrWaitSwapchainImage(sc.handle, &wi), "xrWaitSwapchainImage(labels)")) {
+            return;
+        }
+        GLint prev = 0;
+        glGetIntegerv(GL_TEXTURE_BINDING_2D, &prev);
+        glBindTexture(GL_TEXTURE_2D, sc.images[index].image);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, sc.width, sc.height, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+        glBindTexture(GL_TEXTURE_2D, (GLuint)prev);
+        XrSwapchainImageReleaseInfo ri{ XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
+        if (Check(xrReleaseSwapchainImage(sc.handle, &ri), "xrReleaseSwapchainImage(labels)")) {
+            sc.hasImage = true;
+        }
+    }
+}
+
 // --- Flat mode ---------------------------------------------------------------------------------
 
 // The flat quad (menus, flat game screens): kQuadDistance ahead of where the viewer faced at the
@@ -1946,30 +2039,28 @@ void HudFloatingCrop(XrCompositionLayerQuad* q, const HudCrop& c) {
     q->size = { panelW * r.extent.width / s.hud.width, panelH * r.extent.height / s.hud.height };
 }
 
-// A dash panel: a HUD crop on the cabin dash, posed from the machine's body frame through the
-// cockpit eye anchor into LOCAL tracking space.
-void HudDashPanel(XrCompositionLayerQuad* q, const DashPanel& d, const float dashCentre[3], float halfWidth) {
+// Pose and size a quad lying on the cabin dash face (or tilted from it): across in dash half-widths
+// (+ = viewer's right), along in model units up the face from its centre, sizes in model units. The
+// pose goes from the machine's body frame through the cockpit eye anchor into LOCAL tracking space.
+void PlaceOnDash(XrCompositionLayerQuad* q, const float dashCentre[3], float halfWidth, float across, float along,
+                 float widthModel, float heightModel, float elevationDeg) {
     State& s = S();
     const State::CockpitBody& b = s.cockpitBody;
-    const XrRect2Di r = HudRect(*d.crop);
     const float faceY = std::sin(kDashFaceDeg * 3.14159265f / 180.0f); // dash normal, in (up, forward)
     const float faceZ = std::cos(kDashFaceDeg * 3.14159265f / 180.0f);
-    const float e = d.elevationDeg * 3.14159265f / 180.0f;
+    const float e = elevationDeg * 3.14159265f / 180.0f;
     // Panel frame in (up, forward): Y up its face, Z its normal (towards the viewer).
     const float yUp = std::cos(e), yFwd = std::sin(e);
     const float zUp = std::sin(e), zFwd = -std::cos(e);
-    const float widthModel = d.width * halfWidth * SettingFloat(kSetDashHudSize);
-    const float heightModel = widthModel * r.extent.height / r.extent.width;
-    // Where it meets the dash: along the slope from the centre, lifted off the face; an upright
-    // panel stands on that point, so its centre rises half its height up its own face.
-    const float slopeUp = faceZ, slopeFwd = faceY; // up the dash slope: (8, 14) normalized
-    float mUp = dashCentre[1] + d.along * slopeUp + kDashLift * faceY;
-    float mFwd = dashCentre[2] + d.along * slopeFwd - kDashLift * faceZ;
-    if (d.elevationDeg < kDashFaceDeg - 1.0f) {
+    // Where it meets the dash: along the face from its centre, lifted off it; a panel standing up
+    // from the face rests on that point, so its centre rises half its height up its own face.
+    float mUp = dashCentre[1] + along * faceZ + kDashLift * faceY;
+    float mFwd = dashCentre[2] + along * faceY - kDashLift * faceZ;
+    if (elevationDeg < kDashFaceDeg - 1.0f) {
         mUp += 0.5f * heightModel * yUp;
         mFwd += 0.5f * heightModel * yFwd;
     }
-    const float mx = dashCentre[0] - d.across * halfWidth;
+    const float mx = dashCentre[0] - across * halfWidth;
     const Vec3 X = { -b.side.x, -b.side.y, -b.side.z };
     const Vec3 Y = { b.up.x * yUp + b.fwd.x * yFwd, b.up.y * yUp + b.fwd.y * yFwd, b.up.z * yUp + b.fwd.z * yFwd };
     const Vec3 Z = { b.up.x * zUp + b.fwd.x * zFwd, b.up.y * zUp + b.fwd.y * zFwd, b.up.z * zUp + b.fwd.z * zFwd };
@@ -1982,11 +2073,45 @@ void HudDashPanel(XrCompositionLayerQuad* q, const DashPanel& d, const float das
     q->layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
     q->space = s.localSpace;
     q->eyeVisibility = XR_EYE_VISIBILITY_BOTH;
-    q->subImage.swapchain = s.hud.handle;
-    q->subImage.imageRect = r;
     q->pose.orientation = { p.orientation.x, p.orientation.y, p.orientation.z, p.orientation.w };
     q->pose.position = { p.position.x, p.position.y, p.position.z };
     q->size = { 0.1f * widthModel / s.cockpitUnitsPerMeter, 0.1f * heightModel / s.cockpitUnitsPerMeter };
+}
+
+// A dash readout: a crop of the race HUD on the dash face.
+void HudDashPanel(XrCompositionLayerQuad* q, const DashPanel& d, const float dashCentre[3], float halfWidth) {
+    const XrRect2Di r = HudRect(*d.crop);
+    const float widthModel = d.width * halfWidth * SettingFloat(kSetDashHudSize);
+    PlaceOnDash(q, dashCentre, halfWidth, d.across, d.along, widthModel, widthModel * r.extent.height / r.extent.width,
+                d.elevationDeg);
+    q->subImage.swapchain = S().hud.handle;
+    q->subImage.imageRect = r;
+}
+
+// The warning lamps' labels, beside their lamps (tools/gen_vr_cabin_table.py: the low-energy lamp
+// at -0.78, boost at 0.46, both 6.5 model units down the face): "CHECK ENGINE" blinks with the
+// low-energy lamp, "BOOST READY" shows with the boost lamp. Not scaled by DashHudSize: they belong
+// to the lamps, which are part of the cabin.
+struct DashLabel {
+    int row;  // kLabelText row
+    int lamp; // gGdxVrCabinLamp index that shows it
+    float across, along, width; // width in dash half-widths
+};
+const DashLabel kDashLabels[] = {
+    { 0, 0, -0.48f, -6.5f, 0.40f },
+    { 1, 2, 0.74f, -6.5f, 0.36f },
+};
+constexpr int kDashLabelCount = sizeof(kDashLabels) / sizeof(kDashLabels[0]);
+
+void DashLabelPanel(XrCompositionLayerQuad* q, const DashLabel& l, const float dashCentre[3], float halfWidth) {
+    State& s = S();
+    const int w = LabelTexelWidth(l.row);
+    // Row 0 is the picture's top row; GL images count rows from the bottom.
+    const XrRect2Di r = { { 0, s.labels.height - (l.row + 1) * kLabelHeight }, { w, kLabelHeight } };
+    const float widthModel = l.width * halfWidth;
+    PlaceOnDash(q, dashCentre, halfWidth, l.across, l.along, widthModel, widthModel * kLabelHeight / w, kDashFaceDeg);
+    q->subImage.swapchain = s.labels.handle;
+    q->subImage.imageRect = r;
 }
 
 // Fills parts[] (dash panels, then the floating crop) and appends them to layers. False (nothing
@@ -2004,6 +2129,13 @@ bool AddCabinHudLayers(XrCompositionLayerQuad* parts, const XrCompositionLayerBa
     HudFloatingCrop(&parts[kDashPanelCount], kHudFloatLeft);
     for (int i = 0; i <= kDashPanelCount; i++) {
         layers[(*count)++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&parts[i]);
+    }
+    for (int i = 0; i < kDashLabelCount; i++) {
+        if (s.labels.hasImage && gGdxVrCabinLamp[kDashLabels[i].lamp] != 0) {
+            XrCompositionLayerQuad& q = parts[kDashPanelCount + 2 + i];
+            DashLabelPanel(&q, kDashLabels[i], centre, halfWidth);
+            layers[(*count)++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&q);
+        }
     }
     // Rear-view mirror: at the top of the windscreen, nearly upright, facing the viewer.
     float box[6];
@@ -2487,11 +2619,11 @@ void PresentStereoTick(const StereoCallbacks& cb) {
                                                           { XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW } };
         XrCompositionLayerProjection layer{ XR_TYPE_COMPOSITION_LAYER_PROJECTION };
         XrCompositionLayerQuad hudLayer{ XR_TYPE_COMPOSITION_LAYER_QUAD };
-        XrCompositionLayerQuad hudParts[kDashPanelCount + 2]; // dash panels, floating crop, mirror
+        XrCompositionLayerQuad hudParts[kDashPanelCount + 2 + 2]; // dash panels, floating crop, mirror, labels
         for (XrCompositionLayerQuad& q : hudParts) {
             q = XrCompositionLayerQuad{ XR_TYPE_COMPOSITION_LAYER_QUAD };
         }
-        const XrCompositionLayerBaseHeader* layers[kDashPanelCount + 4];
+        const XrCompositionLayerBaseHeader* layers[kDashPanelCount + 6];
         uint32_t layerCount = 0;
         s.cockpitBody.valid = false; // set again by this frame's cockpit eye rebuilds
         s.cockpitAnchorValid = false;

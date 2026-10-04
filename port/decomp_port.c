@@ -1973,6 +1973,10 @@ static Gfx* gdx_cabin_dl(s32 machine, u8 bodyR, u8 bodyG, u8 bodyB) {
     return sGdxCabinGfx;
 }
 
+/* The lamps' state this tick (0 off, 1 on, already blinking), for the VR host's dash labels: index 0
+   low energy ("CHECK ENGINE", blinking), 1 racer behind, 2 boost ("BOOST READY"). */
+int gGdxVrCabinLamp[3] = { 0, 0, 0 };
+
 /* Dash warning lamps from the racer's state: low energy (red), racer close behind (amber, as the
    game's "CHECK" warning), boost available (green, flashing while boosting). Unlit, so they glow. */
 static Gfx* gdx_cabin_lamps(Gfx* gfx, const Racer* racer) {
@@ -1995,6 +1999,9 @@ static Gfx* gdx_cabin_lamps(Gfx* gfx, const Racer* racer) {
     rgb[1][0] = on[1] ? 255 : 60; rgb[1][1] = on[1] ? 170 : 40; rgb[1][2] = on[1] ? 20 : 8;
     rgb[2][0] = on[2] ? 60 : 12;  rgb[2][1] = on[2] ? 255 : 50; rgb[2][2] = on[2] ? 90 : 18;
 
+    for (i = 0; i < GDX_CABIN_LAMPS; i++) {
+        gGdxVrCabinLamp[i] = on[i] ? 1 : 0;
+    }
     gDPPipeSync(gfx++);
     gDPSetCombineLERP(gfx++, 0, 0, 0, PRIMITIVE, 0, 0, 0, PRIMITIVE, 0, 0, 0, COMBINED, 0, 0, 0, COMBINED);
     for (i = 0; i < GDX_CABIN_LAMPS; i++) {
