@@ -77,6 +77,17 @@ Vec3 Rotate(const Quat& q, const Vec3& v);
 // A vector given in the anchor's local (XR) axes, expressed in world space.
 Vec3 AnchorToWorld(const Anchor& anchor, const Vec3& local);
 
+// Rotation whose columns are the orthonormal axes x, y, z (right-handed).
+Quat QuatFromBasis(const Vec3& x, const Vec3& y, const Vec3& z);
+
+// A pose fixed in the game world (position and orthonormal axes, world units), expressed in the
+// headset's raw LOCAL tracking space: the inverse of how the eyes are placed. `anchor` is the frame
+// the tracked head was attached to (BuildActiveEyeProjView), `unitsPerMeter` the world scale, and
+// the recentre is a yaw (recentreYaw) about the point (recentreOrigin: recentre x, height anchor,
+// recentre z) -- the frame Recentred() removes from raw eye poses.
+Pose WorldToTracking(const Anchor& anchor, float unitsPerMeter, const Quat& recentreYaw, const Vec3& recentreOrigin,
+                     const Vec3& worldPos, const Vec3& worldX, const Vec3& worldY, const Vec3& worldZ);
+
 // Menu pointer: where a ray (unit `dir`) meets a flat panel posed like an XrCompositionLayerQuad
 // (centred on panel.position, facing its local +z, `width` x `height`). Returns true only for a hit
 // on the panel's front face inside its rectangle; u runs 0..1 left to right and v 0..1 top to

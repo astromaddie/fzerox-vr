@@ -1783,9 +1783,26 @@ void gdx_vr_camera_track_up(float out[3]) {
 extern Machine gMachines[];
 extern int gdx_model_packs_enabled(void);
 
+/* The stock model a racer draws (sMachineDrawFuncs index, as func_8008D3C4 picks it), or -1 for an
+   edited custom machine or while model packs are enabled. */
+static s32 gdx_vr_stock_model(const Racer* racer) {
+    s32 customType;
+
+    if (racer->character < 0 || racer->character >= 30 || gdx_model_packs_enabled()) {
+        return -1;
+    }
+    customType = gMachines[racer->character].customType;
+    if (customType == CUSTOM_MACHINE_DEFAULT) {
+        return racer->character;
+    }
+    if (customType >= CUSTOM_MACHINE_SUPER_FALCON) {
+        return customType - CUSTOM_MACHINE_SUPER_FALCON + 30;
+    }
+    return -1;
+}
+
 int gdx_vr_read_player_vehicle(float pos[3], float forward[3], float up[3], float modelUp[3]) {
     const Racer* racer = &gRacers[gCameras[0].id];
-    s32 customType;
 
     pos[0] = racer->modelPos.x;
     pos[1] = racer->modelPos.y;
@@ -1799,16 +1816,225 @@ int gdx_vr_read_player_vehicle(float pos[3], float forward[3], float up[3], floa
     modelUp[0] = racer->modelBasis.y.x;
     modelUp[1] = racer->modelBasis.y.y;
     modelUp[2] = racer->modelBasis.y.z;
+    return gdx_vr_stock_model(racer);
+}
 
-    if (racer->character < 0 || racer->character >= 30 || gdx_model_packs_enabled()) {
+/* VR cabin cockpit (port/vr; Interpreter::OnVrCabinMarker). In a stereo tick with the cabin cockpit
+   on, Racer_Draw brackets the followed racer's machine with cut markers -- the interpreter then skips
+   its hull triangles inside the cabin volume and its canopy glass -- and draws a cabin in their place:
+   floor, walls, body-coloured sills, dash, gauges, and the machine's own canopy as tinted glass (or a
+   generic frame and glass where it has none). Geometry per stock machine comes from
+   port/vr/gdx_vr_cabin_table.h (tools/gen_vr_cabin_table.py). Set per tick by port/vr; 0 otherwise. */
+#include "vr/gdx_vr_cabin_table.h"
+
+int gGdxVrCabinActive = 0;
+extern char* getenv(const char* name);
+
+#define GDX_CABIN_MAX_TRIS 160
+/* In emulated RDRAM (gdx_rdram_persist_alloc_raw), allocated on first use and kept for the session.
+   The gfx bridge picks a buffer's command stride and byte order by the address range it lives in:
+   vertices here are read natively (in the executable's static data they came out scrambled), and the
+   command buffer is registered as a PORT-format (16-byte) list range. */
+static Vtx* sGdxCabinVtx = NULL;
+static Gfx* sGdxCabinGfx = NULL;
+static s32 sGdxCabinBuiltFor = -1; /* machine | body colour, packed; -1: nothing built */
+
+static const u8 kGdxCabinPartRgb[GDX_CABIN_PART_COUNT][3] = {
+    { 38, 40, 46 },    /* FLOOR */
+    { 52, 54, 62 },    /* WALL */
+    { 0, 0, 0 },       /* BODY: the racer's body colour */
+    { 44, 46, 52 },    /* BULKHEAD */
+    { 30, 30, 34 },    /* HEADREST */
+    { 24, 26, 30 },    /* DASH */
+    { 90, 230, 255 },  /* GAUGE_CYAN */
+    { 255, 170, 40 },  /* GAUGE_AMBER */
+    { 255, 70, 90 },   /* GAUGE_RED */
+    { 150, 156, 168 }, /* FRAME */
+    { 0, 0, 0 },       /* GLASS_OWN: the machine's canopy tint */
+    { 150, 200, 235 }, /* GLASS_GENERIC */
+};
+
+static void gdx_cabin_set_vtx(Vtx* v, const short p[3], const signed char n[3], s32 flip) {
+    v->n.ob[0] = p[0];
+    v->n.ob[1] = p[1];
+    v->n.ob[2] = p[2];
+    v->n.flag = 0;
+    v->n.tc[0] = 0;
+    v->n.tc[1] = 0;
+    v->n.n[0] = flip ? -n[0] : n[0];
+    v->n.n[1] = flip ? -n[1] : n[1];
+    v->n.n[2] = flip ? -n[2] : n[2];
+    v->n.a = 255;
+}
+
+/* Every triangle of `part`, both sides (the machine pipeline culls back faces), 10 per vertex load. */
+static Gfx* gdx_cabin_emit_part(Gfx* g, s32* vtxUsed, const GdxCabinMachine* m, s32 part) {
+    s32 i;
+    s32 batch = 0;
+    Vtx* base = NULL;
+
+    for (i = 0; i < m->triCount; i++) {
+        const GdxCabinTri* t = &kGdxCabinTris[m->triStart + i];
+        Vtx* v;
+
+        if (t->part != part || *vtxUsed + 6 > GDX_CABIN_MAX_TRIS * 6) {
+            continue;
+        }
+        if (batch == 0) {
+            base = &sGdxCabinVtx[*vtxUsed];
+        }
+        v = &base[batch * 6];
+        gdx_cabin_set_vtx(&v[0], t->v[0], t->n, 0);
+        gdx_cabin_set_vtx(&v[1], t->v[1], t->n, 0);
+        gdx_cabin_set_vtx(&v[2], t->v[2], t->n, 0);
+        gdx_cabin_set_vtx(&v[3], t->v[0], t->n, 1);
+        gdx_cabin_set_vtx(&v[4], t->v[2], t->n, 1);
+        gdx_cabin_set_vtx(&v[5], t->v[1], t->n, 1);
+        *vtxUsed += 6;
+        batch++;
+        if (batch == 10) {
+            s32 k;
+            gSPVertex(g++, base, 60, 0);
+            for (k = 0; k < 10; k++) {
+                gSP2Triangles(g++, k * 6, k * 6 + 1, k * 6 + 2, 0, k * 6 + 3, k * 6 + 4, k * 6 + 5, 0);
+            }
+            batch = 0;
+        }
+    }
+    if (batch > 0) {
+        s32 k;
+        gSPVertex(g++, base, batch * 6, 0);
+        for (k = 0; k < batch; k++) {
+            gSP2Triangles(g++, k * 6, k * 6 + 1, k * 6 + 2, 0, k * 6 + 3, k * 6 + 4, k * 6 + 5, 0);
+        }
+    }
+    return g;
+}
+
+static Gfx* gdx_cabin_dl(s32 machine, u8 bodyR, u8 bodyG, u8 bodyB) {
+    const s32 key = (machine << 24) | (bodyR << 16) | (bodyG << 8) | bodyB;
+    const GdxCabinMachine* m = &kGdxCabinMachines[machine];
+    Gfx* g;
+    s32 vtxUsed = 0;
+    s32 part;
+
+    if (sGdxCabinVtx == NULL) {
+        sGdxCabinVtx = (Vtx*)gdx_rdram_persist_alloc_raw(sizeof(Vtx) * GDX_CABIN_MAX_TRIS * 6, 16);
+        sGdxCabinGfx = (Gfx*)gdx_rdram_persist_alloc_raw(sizeof(Gfx) * (GDX_CABIN_MAX_TRIS + 64), 16);
+        /* RDRAM is read as raw N64 data (8-byte big-endian commands) unless registered as holding
+           PORT-format (16-byte) lists like this one. The vertices stay unregistered: RDRAM
+           vertices are read natively. */
+        gdx_register_host_wide_command_range(sGdxCabinGfx, sizeof(Gfx) * (GDX_CABIN_MAX_TRIS + 64));
+    }
+    if (key == sGdxCabinBuiltFor) {
+        return sGdxCabinGfx;
+    }
+    g = sGdxCabinGfx;
+    gDPPipeSync(g++);
+    /* Lit like the hull: colour from PRIMITIVE, shaded by the game's lights in the second cycle. */
+    gDPSetCombineLERP(g++, 0, 0, 0, PRIMITIVE, 0, 0, 0, PRIMITIVE, COMBINED, 0, SHADE, 0, 0, 0, 0, COMBINED);
+    for (part = 0; part < GDX_CABIN_PART_COUNT; part++) {
+        if (part == GDX_CABIN_PART_GLASS_OWN || part == GDX_CABIN_PART_GLASS_GENERIC) {
+            continue;
+        }
+        if (part == GDX_CABIN_PART_BODY) {
+            gDPSetPrimColor(g++, 0, 0, bodyR, bodyG, bodyB, 255);
+        } else {
+            gDPSetPrimColor(g++, 0, 0, kGdxCabinPartRgb[part][0], kGdxCabinPartRgb[part][1], kGdxCabinPartRgb[part][2],
+                            255);
+        }
+        g = gdx_cabin_emit_part(g, &vtxUsed, m, part);
+    }
+    /* Glass last, translucent; Racer_Draw re-runs the machine setup list afterwards to restore. */
+    gDPPipeSync(g++);
+    gDPSetRenderMode(g++, G_RM_FOG_SHADE_A, G_RM_AA_ZB_XLU_SURF2);
+    if (m->kind == 1) {
+        gDPSetPrimColor(g++, 0, 0, m->glassRgb[0], m->glassRgb[1], m->glassRgb[2], 110);
+        g = gdx_cabin_emit_part(g, &vtxUsed, m, GDX_CABIN_PART_GLASS_OWN);
+    } else {
+        gDPSetPrimColor(g++, 0, 0, kGdxCabinPartRgb[GDX_CABIN_PART_GLASS_GENERIC][0],
+                        kGdxCabinPartRgb[GDX_CABIN_PART_GLASS_GENERIC][1],
+                        kGdxCabinPartRgb[GDX_CABIN_PART_GLASS_GENERIC][2], 60);
+        g = gdx_cabin_emit_part(g, &vtxUsed, m, GDX_CABIN_PART_GLASS_GENERIC);
+    }
+    gSPEndDisplayList(g++);
+    sGdxCabinBuiltFor = key;
+    return sGdxCabinGfx;
+}
+
+/* Racer_Draw: before the machine's LOD list. Returns the stock model (and emits the cut-begin
+   marker) when this racer gets a cabin this tick, else -1. The caller then draws LOD1 regardless of
+   distance, since the cut volume and glass are measured on LOD1. */
+s32 gdx_vr_cabin_begin(Gfx** gfx, const Racer* racer) {
+    s32 machine;
+
+    static s32 sDiagInChase = -1;
+    static s32 sLoggedMachine = -2;
+
+    if (sDiagInChase < 0) {
+        /* GDX_VR_CABIN_IN_CHASE=1: also draw the cabin (without the hull cut) in the chase view, to
+           inspect it from outside. Diagnostic only. */
+        const char* e = getenv("GDX_VR_CABIN_IN_CHASE");
+        sDiagInChase = (e != NULL && e[0] == '1') ? 1 : 0;
+    }
+    if ((!gGdxVrCabinActive && !sDiagInChase) || !gGdxVrHudMarkerEnabled || racer != &gRacers[gCameras[0].id]) {
         return -1;
     }
-    customType = gMachines[racer->character].customType;
-    if (customType == CUSTOM_MACHINE_DEFAULT) {
-        return racer->character;
+    machine = gdx_vr_stock_model(racer);
+    if (machine != sLoggedMachine) {
+        sLoggedMachine = machine;
+        gdx_dbg_logf("[vr] cabin: racer %d character %d -> model %d (%s)\n", racer->id, racer->character, machine,
+                      (machine >= 0 && machine < GDX_CABIN_MACHINE_COUNT) ? "cabin" : "no cabin data, roof view");
     }
-    if (customType >= CUSTOM_MACHINE_SUPER_FALCON) {
-        return customType - CUSTOM_MACHINE_SUPER_FALCON + 30;
+    if (machine < 0 || machine >= GDX_CABIN_MACHINE_COUNT) {
+        return -1;
     }
-    return -1;
+    gDma0p((*gfx)++, G_NOOP, 0, (0x5B << 16) | machine);
+    return machine;
+}
+
+/* Racer_Draw: after the machine's LOD list, with its model matrix still loaded. */
+Gfx* gdx_vr_cabin_end(Gfx* gfx, const Racer* racer, s32 machine, Gfx* setupDl) {
+    gDma0p(gfx++, G_NOOP, 0, (0x5C << 16));
+    gSPDisplayList(gfx++, gdx_cabin_dl(machine, racer->bodyR, racer->bodyG, racer->bodyB));
+    gSPDisplayList(gfx++, setupDl);
+    return gfx;
+}
+
+/* For port/vr's cockpit eye (seat) and the interpreter's cut (box, glass): 0 when the machine has no
+   cabin data. Model units. */
+int gdx_vr_cabin_seat(int machine, float seat[3]) {
+    if (machine < 0 || machine >= GDX_CABIN_MACHINE_COUNT) {
+        return 0;
+    }
+    seat[0] = kGdxCabinMachines[machine].seat[0];
+    seat[1] = kGdxCabinMachines[machine].seat[1];
+    seat[2] = kGdxCabinMachines[machine].seat[2];
+    return 1;
+}
+
+/* Centre of the cabin's dash face (model units) and its half-width, for the VR host's dash HUD. */
+int gdx_vr_cabin_dash(int machine, float centre[3], float* halfWidth) {
+    if (machine < 0 || machine >= GDX_CABIN_MACHINE_COUNT) {
+        return 0;
+    }
+    centre[0] = kGdxCabinMachines[machine].dash[0];
+    centre[1] = kGdxCabinMachines[machine].dash[1];
+    centre[2] = kGdxCabinMachines[machine].dash[2];
+    *halfWidth = kGdxCabinMachines[machine].dashHalfWidth;
+    return 1;
+}
+
+int gdx_vr_cabin_cut(int machine, float box[6], const short** glass, int* glassCount) {
+    s32 i;
+
+    if (machine < 0 || machine >= GDX_CABIN_MACHINE_COUNT) {
+        return 0;
+    }
+    for (i = 0; i < 6; i++) {
+        box[i] = kGdxCabinMachines[machine].box[i];
+    }
+    *glass = &kGdxCabinGlass[kGdxCabinMachines[machine].glassStart][0];
+    *glassCount = kGdxCabinMachines[machine].glassCount;
+    return 1;
 }

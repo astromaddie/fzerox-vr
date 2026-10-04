@@ -298,6 +298,8 @@ Measured on the Frame (72 Hz runtime default, headset in standby, forced renderi
 | `GDX_VR_DUMP_ON_SPRITE=1` | Dump the eyes of the first stereo frame that places a world sprite (`vr-sprite-eye<e>.bmp`) and the HUD of the first tick that draws a HUD sprite (`vr-sprite-hud.bmp`). |
 | `GDX_VR_DUMP_COUNT=<k>` | With `GDX_VR_DUMP_FRAME`, dump k consecutive stereo frames (left eye only when k > 1). Each dump is a synchronous readback, so dumped frames are several ticks apart. |
 | `GDX_VR_DIAG_GEOM=<n>` | Log the first n cockpit eye renders' far-plane vertex count, clip-rejected and emitted triangles (`[vr-geom]`). |
+| `GDX_VR_DIAG_PITCH=<deg>` | Tilt the located head about its own x axis (negative looks down), e.g. to capture the cabin dash. |
+| `GDX_VR_CABIN_IN_CHASE=1` | Also draw the cabin (without the hull cut) in the chase view, to inspect it from outside. |
 | `GDX_VR_COCKPIT_NEAR=<units>`, `GDX_VR_COCKPIT_FAR_SCALE=<x>` | Override the cockpit projection's near plane (default 2) and far multiple (default 4), for experiments. |
 | `GDX_PERF=1` | Makes the `logic` and `xlate` stages of `[vr-perf]` real (they come from the port's GDX_PERF telemetry; they read 0.00 otherwise). |
 
@@ -437,6 +439,26 @@ edits all of these except `Stereo` and `WideCull`.
     Flat mode and the chase view keep the reject behaviour.
   - Scale: `WorldScale`, as in the chase view. The wearer found 2 (the old minimum) still made the
     cockpit feel a little small, so the range now goes down to 1.
+  - **Cabin style** (`gEnhancements.VR.CockpitStyle` 1, the default; 0 keeps the roof seat): the
+    viewer sits inside a cabin in their own machine. `tools/gen_vr_cabin_table.py --o2r` measures
+    each stock LOD1 mesh into `port/vr/gdx_vr_cabin_table.h`: cabin volume, seat, cabin geometry
+    (floor, walls, body-coloured sills, bulkhead, headrest, dash) and the canopy glass triangles.
+    27 of 33 machines keep their own canopy as tinted glass (Twin Noritta: the left hull's; its
+    other cockpit stays as drawn); the six without glass get a generic frame and glass. Custom
+    machines and model packs fall back to the roof seat. In cabin ticks Racer_Draw brackets the
+    followed racer's LOD1 with `G_NOOP` 0x5B/0x5C; inside them cockpit eyes skip hull triangles in
+    the cabin volume or on the canopy (`Interpreter::SetVrCabinCut`), and the cabin list is drawn
+    after with the machine's own lights, then the machine setup list restores state. The cabin's
+    vertices and list live in emulated RDRAM, the list range registered as PORT-format
+    (`gdx_register_host_wide_command_range`): in the executable's static data the bridge read the
+    vertices as N64 data (scrambled axes), and unregistered RDRAM lists as 8-byte commands (nothing
+    drawn). `CabinSeatUp` / `CabinSeatForward` (+-10 world units) adjust the seat.
+  - **Dash HUD** (cabin only): the energy meter and speed readout are crops (`imageRect`) of the
+    race HUD swapchain, shown as quad layers on the dash face, posed from the machine's body frame
+    through the cockpit eye anchor into LOCAL (`WorldToTracking`); `DashHudSize` (0.45, first wear
+    found full size too large) scales them. The rest of the HUD floats as before, as two crops that
+    leave those corners out. Crops assume OpenGL bottom-up rows (`HudRect`); not yet confirmed in the
+    headset, along with the size.
   - The pose is snapshotted per tick with the camera poses and interpolated at the frame's t, so it
     stays phase-locked to the rendered machine.
   - Verified unattended (before the tilt and near-plane change): a forced-render cockpit eye dump in

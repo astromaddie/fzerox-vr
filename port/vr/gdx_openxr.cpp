@@ -55,6 +55,11 @@ extern "C" int gNumPlayers;
 extern "C" int gGdxVrHudMarkerEnabled;
 // port/decomp_port.c: distance-only culling for track chunks and machines while set.
 extern "C" int gGdxVrWideCull;
+// port/decomp_port.c: VR cabin cockpit (Racer_Draw draws a cabin in the followed racer's machine).
+extern "C" int gGdxVrCabinActive;
+extern "C" int gdx_vr_cabin_seat(int machine, float seat[3]);
+extern "C" int gdx_vr_cabin_cut(int machine, float box[6], const short** glass, int* glassCount);
+extern "C" int gdx_vr_cabin_dash(int machine, float centre[3], float* halfWidth);
 // port/decomp_port.c: camera 0's track up (the game's smoothed gravity-up for the followed racer).
 extern "C" void gdx_vr_camera_track_up(float out[3]);
 // port/decomp_port.c: bumped every time Race_Draw runs.
@@ -234,6 +239,16 @@ struct State {
     Swapchain eyes[2];
     Swapchain hud;
     Swapchain beam; // solid-colour texture for the menu pointer's laser quad
+    // Cabin dash HUD: the followed machine's body frame and the cockpit eye anchor of the frame being
+    // built (both world units), set while the cockpit eyes are rebuilt, read when the layers go out.
+    struct CockpitBody {
+        bool valid = false;
+        int machine = -1;
+        Vec3 pos{}, side{}, up{}, fwd{};
+    } cockpitBody;
+    bool cockpitAnchorValid = false;
+    Anchor cockpitAnchor{};
+    float cockpitUnitsPerMeter = 1.0f;
     long long hudRenderedTick = -1;
     XrTime lastDisplayTime = 0; // the latest xrWaitFrame prediction, for locating controller poses
 
@@ -520,6 +535,7 @@ void DestroySession() {
     gfx_pre_present_hook = nullptr;
     gGdxVrInputMerge = nullptr;
     Fast::Interpreter::SetVrWorldSpriteResolver(nullptr);
+    Fast::Interpreter::SetVrCabinCutResolver(nullptr);
     if (s.input.aimSpace != XR_NULL_HANDLE) {
         xrDestroySpace(s.input.aimSpace);
     }
@@ -1204,6 +1220,9 @@ bool CreateEverything() {
         *out = { v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7] };
         return true;
     });
+    Fast::Interpreter::SetVrCabinCutResolver([](uint32_t machine, Fast::Interpreter::VrCabinCut* out) {
+        return gdx_vr_cabin_cut((int)machine, out->box, &out->glass, &out->glassCount) != 0;
+    });
     return true;
 }
 
@@ -1827,6 +1846,119 @@ void PrePresentHook() {
     EndPendingWithQuad();
 }
 
+// --- Cabin dash HUD ------------------------------------------------------------------------------
+//
+// In the cabin cockpit the race HUD's energy meter and speed readout sit on the dash and the rest
+// floats as usual. All four are crops (imageRect) of the one HUD swapchain image, so nothing is drawn
+// twice. Crop rectangles are in HUD pixels, top-down, measured from the 1440x960 widescreen layout
+// (energy x 1040..1327 y 80..144, time from y 156, speed x 1112..1335 y 816..879); the right-hand
+// elements are anchored to the right edge, so their x is kept relative to it for other HUD aspects.
+struct HudCrop {
+    int x0, y0, x1, y1; // top-down pixels; negative x counts from the right edge
+};
+constexpr HudCrop kHudEnergy = { -404, 76, -108, 148 };
+constexpr HudCrop kHudSpeed = { -332, 812, -100, 884 };
+constexpr HudCrop kHudFloatLeft = { 0, 0, -488, 960 };       // portraits, lap, position, centre messages
+constexpr HudCrop kHudFloatRight = { -488, 150, 0, 800 };    // time, minimap
+// The dash face rises (0, 8, 14) model units from its back edge to its front edge; panels sit 0.6
+// model units above it. Across the dash, positions are in dash half-widths from its centre.
+constexpr float kDashLift = 0.6f;
+constexpr float kEnergyAcross = -0.30f, kEnergyWidth = 0.95f; // viewer's left of centre
+constexpr float kSpeedAcross = 0.55f, kSpeedWidth = 0.65f;    // viewer's right
+
+XrRect2Di HudRect(const HudCrop& c) {
+    const State& s = S();
+    const int w = s.hud.width;
+    const int h = s.hud.height;
+    const int x0 = c.x0 < 0 ? w + c.x0 : c.x0;  // a negative x counts from the right edge
+    // x1 == 0 means the right edge itself.
+    const int x1 = c.x1 <= 0 ? w + c.x1 : c.x1;
+    const int y0 = c.y0 * h / 960;
+    const int y1 = c.y1 * h / 960;
+    // OpenGL swapchain images are stored bottom-up: rows count from the bottom of the picture.
+    return { { x0, h - y1 }, { x1 - x0, y1 - y0 } };
+}
+
+// The floating part: a crop of the head-locked HUD panel, at the place it has in the full panel.
+void HudFloatingCrop(XrCompositionLayerQuad* q, const HudCrop& c) {
+    State& s = S();
+    const XrRect2Di r = HudRect(c);
+    const float panelH = SettingFloat(kSetHudHeight);
+    const float panelW = panelH * (float)s.hud.width / (float)s.hud.height;
+    const float topDownY = (float)(s.hud.height - r.offset.y - r.extent.height);
+    q->layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+    q->space = s.viewSpace;
+    q->eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+    q->subImage.swapchain = s.hud.handle;
+    q->subImage.imageRect = r;
+    q->pose.orientation = { 0.0f, 0.0f, 0.0f, 1.0f };
+    q->pose.position = { ((r.offset.x + 0.5f * r.extent.width) / s.hud.width - 0.5f) * panelW,
+                         (0.5f - (topDownY + 0.5f * r.extent.height) / s.hud.height) * panelH, -kHudDistance };
+    q->size = { panelW * r.extent.width / s.hud.width, panelH * r.extent.height / s.hud.height };
+}
+
+// A dash panel: a HUD crop lying on the cabin dash, posed from the machine's body frame through the
+// cockpit eye anchor into LOCAL tracking space.
+bool HudDashPanel(XrCompositionLayerQuad* q, const HudCrop& c, const float dashCentre[3], float halfWidth,
+                  float across, float widthHalfWidths) {
+    State& s = S();
+    const State::CockpitBody& b = s.cockpitBody;
+    const XrRect2Di r = HudRect(c);
+    const float sl = std::sqrt(8.0f * 8.0f + 14.0f * 14.0f);
+    const float sy = 8.0f / sl, sz = 14.0f / sl; // up the slope, in (up, forward)
+    // Model-space panel frame: X = viewer's right (model -x), Y = up the slope, Z = the dash normal.
+    const float mx = dashCentre[0] - across * halfWidth;
+    const float my = dashCentre[1] + kDashLift * sz;
+    const float mz = dashCentre[2] - kDashLift * sy;
+    const Vec3 X = { -b.side.x, -b.side.y, -b.side.z };
+    const Vec3 Y = { b.up.x * sy + b.fwd.x * sz, b.up.y * sy + b.fwd.y * sz, b.up.z * sy + b.fwd.z * sz };
+    const Vec3 Z = { b.up.x * sz - b.fwd.x * sy, b.up.y * sz - b.fwd.y * sy, b.up.z * sz - b.fwd.z * sy };
+    const Vec3 world = { b.pos.x + 0.1f * (b.side.x * mx + b.up.x * my + b.fwd.x * mz),
+                         b.pos.y + 0.1f * (b.side.y * mx + b.up.y * my + b.fwd.y * mz),
+                         b.pos.z + 0.1f * (b.side.z * mx + b.up.z * my + b.fwd.z * mz) };
+    const Quat yaw = s.recenterValid ? s.recenterYaw : Quat{ 0.0f, 0.0f, 0.0f, 1.0f };
+    const Vec3 origin = s.recenterValid ? Vec3{ s.recenterPos.x, s.heightAnchor, s.recenterPos.z } : Vec3{ 0, 0, 0 };
+    const Pose p = WorldToTracking(s.cockpitAnchor, s.cockpitUnitsPerMeter, yaw, origin, world, X, Y, Z);
+    const float widthM = 0.1f * widthHalfWidths * halfWidth * SettingFloat(kSetDashHudSize) / s.cockpitUnitsPerMeter;
+    q->layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+    q->space = s.localSpace;
+    q->eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+    q->subImage.swapchain = s.hud.handle;
+    q->subImage.imageRect = r;
+    q->pose.orientation = { p.orientation.x, p.orientation.y, p.orientation.z, p.orientation.w };
+    q->pose.position = { p.position.x, p.position.y, p.position.z };
+    q->size = { widthM, widthM * r.extent.height / r.extent.width };
+    return true;
+}
+
+// Fills parts[0..3] and appends them to layers. False (nothing added) without a cabin this frame.
+bool AddCabinHudLayers(XrCompositionLayerQuad* parts, const XrCompositionLayerBaseHeader** layers, uint32_t* count) {
+    State& s = S();
+    float centre[3], halfWidth = 0.0f;
+    if (!s.cockpitBody.valid || !s.cockpitAnchorValid ||
+        gdx_vr_cabin_dash(s.cockpitBody.machine, centre, &halfWidth) == 0 || halfWidth <= 0.0f) {
+        return false;
+    }
+    HudDashPanel(&parts[0], kHudEnergy, centre, halfWidth, kEnergyAcross, kEnergyWidth);
+    HudDashPanel(&parts[1], kHudSpeed, centre, halfWidth, kSpeedAcross, kSpeedWidth);
+    HudFloatingCrop(&parts[2], kHudFloatLeft);
+    HudFloatingCrop(&parts[3], kHudFloatRight);
+    for (int i = 0; i < 4; i++) {
+        layers[(*count)++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&parts[i]);
+    }
+    static int sLogged = -2;
+    if (sLogged != s.cockpitBody.machine) {
+        sLogged = s.cockpitBody.machine;
+        const XrVector3f& e = parts[0].pose.position;
+        const XrVector3f& v = parts[1].pose.position;
+        gdx_port_logf("[vr] cabin dash HUD (machine %d): energy at (%.2f, %.2f, %.2f) m, %.2f x %.2f m; "
+                      "speed at (%.2f, %.2f, %.2f) m, %.2f x %.2f m (LOCAL)\n",
+                      s.cockpitBody.machine, e.x, e.y, e.z, parts[0].size.width, parts[0].size.height, v.x, v.y, v.z,
+                      parts[1].size.width, parts[1].size.height);
+    }
+    return true;
+}
+
 // --- Race HUD layer ---------------------------------------------------------------------------
 //
 // The HUD is composited over the world by alpha, but the game draws much of it with render modes
@@ -2151,6 +2283,7 @@ bool BeginHostIteration() {
     State& s = S();
     s.stereoThisTick = false;
     gGdxVrWideCull = 0;
+    gGdxVrCabinActive = 0;
     if (s.phase == Phase::Off || s.phase == Phase::Exiting) {
         return true;
     }
@@ -2205,6 +2338,7 @@ bool BeginHostIteration() {
     }
     s.stereoThisTick = StereoWanted();
     gGdxVrWideCull = (s.stereoThisTick && SettingInt(kSetWideCull) != 0) ? 1 : 0;
+    gGdxVrCabinActive = (s.stereoThisTick && s.cockpit && SettingInt(kSetCockpitStyle) == 1) ? 1 : 0;
     if (s.stereoThisTick != s.lastTickStereo) {
         gdx_port_logf("[openxr] presentation -> %s (mode=0x%02X players=%d)\n", s.stereoThisTick ? "stereo" : "flat",
                       gGameMode & 0x1F, gNumPlayers);
@@ -2262,8 +2396,12 @@ void PresentStereoTick(const StereoCallbacks& cb) {
                                                           { XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW } };
         XrCompositionLayerProjection layer{ XR_TYPE_COMPOSITION_LAYER_PROJECTION };
         XrCompositionLayerQuad hudLayer{ XR_TYPE_COMPOSITION_LAYER_QUAD };
-        const XrCompositionLayerBaseHeader* layers[2];
+        XrCompositionLayerQuad hudParts[4] = { { XR_TYPE_COMPOSITION_LAYER_QUAD }, { XR_TYPE_COMPOSITION_LAYER_QUAD },
+                                               { XR_TYPE_COMPOSITION_LAYER_QUAD }, { XR_TYPE_COMPOSITION_LAYER_QUAD } };
+        const XrCompositionLayerBaseHeader* layers[6];
         uint32_t layerCount = 0;
+        s.cockpitBody.valid = false; // set again by this frame's cockpit eye rebuilds
+        s.cockpitAnchorValid = false;
 
         if (s.pending.state.shouldRender || ForceRender()) {
             XrViewLocateInfo vli{ XR_TYPE_VIEW_LOCATE_INFO };
@@ -2308,6 +2446,28 @@ void PresentStereoTick(const StereoCallbacks& cb) {
                     const Vec3 p = Rotate(yaw, { views[e].pose.position.x, views[e].pose.position.y,
                                                  views[e].pose.position.z });
                     views[e].pose.position = { p.x, p.y, p.z };
+                }
+            }
+            // GDX_VR_DIAG_PITCH=<degrees>: tilts the located head about its own x axis (negative looks
+            // down), e.g. to capture the cockpit dash unattended.
+            static const float sDiagPitchDeg = [] {
+                const char* e = std::getenv("GDX_VR_DIAG_PITCH");
+                const float v = (e != nullptr && e[0] != '\0') ? std::strtof(e, nullptr) : 0.0f;
+                if (v != 0.0f) {
+                    gdx_port_logf("[openxr] GDX_VR_DIAG_PITCH=%.1f\n", v);
+                }
+                return v;
+            }();
+            if (poseOk && sDiagPitchDeg != 0.0f) {
+                const float half = sDiagPitchDeg * 3.14159265f / 360.0f;
+                const Quat p = { std::sin(half), 0.0f, 0.0f, std::cos(half) };
+                for (int e = 0; e < 2; e++) {
+                    const Quat q = { views[e].pose.orientation.x, views[e].pose.orientation.y,
+                                     views[e].pose.orientation.z, views[e].pose.orientation.w };
+                    views[e].pose.orientation = { q.w * p.x + q.x * p.w + q.y * p.z - q.z * p.y,
+                                                  q.w * p.y - q.x * p.z + q.y * p.w + q.z * p.x,
+                                                  q.w * p.z + q.x * p.y - q.y * p.x + q.z * p.w,
+                                                  q.w * p.w - q.x * p.x - q.y * p.y - q.z * p.z };
                 }
             }
             if (poseOk) {
@@ -2364,7 +2524,10 @@ void PresentStereoTick(const StereoCallbacks& cb) {
                         layer.viewCount = 2;
                         layer.views = projViews;
                         layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&layer);
-                        if (s.hud.hasImage) {
+                        if (s.hud.hasImage && gGdxVrCabinActive != 0 &&
+                            AddCabinHudLayers(hudParts, layers, &layerCount)) {
+                            // energy and speed on the dash, the rest floating (AddCabinHudLayers)
+                        } else if (s.hud.hasImage) {
                             hudLayer.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
                             hudLayer.space = s.viewSpace;
                             hudLayer.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
@@ -2411,10 +2574,29 @@ bool CockpitMode() {
     return S().cockpit;
 }
 
-void CockpitOffsets(int machine, float* forward, float* up, float* tilt) {
+void SetCockpitBody(const float pos[3], const float side[3], const float up[3], const float fwd[3], int machine) {
+    State::CockpitBody& b = S().cockpitBody;
+    b.pos = { pos[0], pos[1], pos[2] };
+    b.side = { side[0], side[1], side[2] };
+    b.up = { up[0], up[1], up[2] };
+    b.fwd = { fwd[0], fwd[1], fwd[2] };
+    b.machine = machine;
+    b.valid = true;
+}
+
+void CockpitOffsets(int machine, float* forward, float* up, float* side, float* tilt) {
+    *tilt = SettingFloat(kSetCockpitTilt);
+    *side = 0.0f;
+    float seat[3];
+    if (SettingInt(kSetCockpitStyle) == 1 && gdx_vr_cabin_seat(machine, seat) != 0) {
+        // Inside the cabin: the measured seat (model units, 0.1 world units each) plus the wearer's offset.
+        *forward = seat[2] * 0.1f + SettingFloat(kSetCabinSeatForward);
+        *up = seat[1] * 0.1f + SettingFloat(kSetCabinSeatUp);
+        *side = seat[0] * 0.1f;
+        return;
+    }
     *forward = SettingFloat(kSetRoofForward);
     *up = gdx_vr::CockpitRoofHeight(machine, *forward) + SettingFloat(kSetRoofClearance);
-    *tilt = SettingFloat(kSetCockpitTilt);
 }
 
 bool BuildActiveEyeProjView(const float eye[3], const float at[3], const float up[3], float nearZ, float farZ,
@@ -2462,6 +2644,11 @@ bool BuildActiveEyeProjView(const float eye[3], const float at[3], const float u
         }
     }
     const float unitsPerMeter = unitsPerMeterIn > 0.0f ? unitsPerMeterIn : SettingFloat(kSetWorldScale);
+    if (!levelPitch) { // the cockpit eye: the dash HUD is placed relative to this anchor
+        s.cockpitAnchor = anchor;
+        s.cockpitUnitsPerMeter = unitsPerMeter;
+        s.cockpitAnchorValid = true;
+    }
     EyeProjView(anchor, s.activeEye.pose, s.activeEye.fov, unitsPerMeter, nearZ, farZ, out);
     const Vec3 offset = AnchorToWorld(anchor, s.activeEye.pose.position);
     s.activeEye.worldPos = { anchor.origin.x + offset.x * unitsPerMeter, anchor.origin.y + offset.y * unitsPerMeter,

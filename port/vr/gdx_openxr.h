@@ -78,7 +78,12 @@ bool CockpitMode();
 // (gdx_vr::CockpitRoofHeight; `machine` as returned by gdx_vr_read_player_vehicle) plus
 // gEnhancements.VR.RoofClearance. `tilt` (gEnhancements.VR.CockpitTilt) blends the view's up from the
 // machine's travel frame (0) to its body, lean and tilt included (1).
-void CockpitOffsets(int machine, float* forward, float* up, float* tilt);
+// `side`: world units along the machine's model +x (up x forward); the cabin seat is off-centre in
+// Twin Noritta's hull, 0 everywhere else.
+void CockpitOffsets(int machine, float* forward, float* up, float* side, float* tilt);
+// The followed machine's body frame (world position, and its model +x, up and forward axes) for this
+// frame's cockpit eyes, so the cabin dash can carry the energy and speed HUD crops.
+void SetCockpitBody(const float pos[3], const float side[3], const float up[3], const float fwd[3], int machine);
 
 // World-space frame of the active eye as last built by BuildActiveEyeProjView (position, forward,
 // up), with the tangents of its widest horizontal and vertical half-angles. For per-eye rebuilds

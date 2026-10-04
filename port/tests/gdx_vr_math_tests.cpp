@@ -322,6 +322,39 @@ static void CasePointer() {
     check("degenerate beam", !BeamPose({ 1, 1, 1 }, { 1, 1, 1 }, { 0, 0, 0 }, &beam, &len));
 }
 
+static void CaseWorldToTracking() {
+    // Anchor: eye at (100, 50, 20) looking down world -z, up +y; 10 world units per metre.
+    Anchor a;
+    check("anchor", AnchorFromLookAt({ 100, 50, 20 }, { 100, 50, 10 }, { 0, 1, 0 }, &a));
+    const Quat id = { 0, 0, 0, 1 };
+    const Vec3 ox = { 1, 0, 0 }, oy = { 0, 1, 0 }, oz = { 0, 0, 1 };
+    // A point 10 units straight ahead of the anchor is 1 m ahead in tracking space (-z).
+    Pose p = WorldToTracking(a, 10.0f, id, { 0, 0, 0 }, { 100, 50, 10 }, ox, oy, oz);
+    checkNear("ahead x", p.position.x, 0.0, 1e-5);
+    checkNear("ahead z", p.position.z, -1.0, 1e-5);
+    checkNear("world-aligned axes stay identity", p.orientation.w, 1.0, 1e-5);
+    // Recentred 90 deg left (+y) about (2, 1.6, 3): ahead becomes -x.
+    const float h = std::sqrt(0.5f);
+    p = WorldToTracking(a, 10.0f, { 0, h, 0, h }, { 2, 1.6f, 3 }, { 100, 50, 10 }, ox, oy, oz);
+    checkNear("recentred ahead x", p.position.x, 2.0 - 1.0, 1e-5);
+    checkNear("recentred height", p.position.y, 1.6, 1e-5);
+    checkNear("recentred z", p.position.z, 3.0, 1e-5);
+    const Vec3 fx = Rotate(p.orientation, { 1, 0, 0 });
+    checkNear("world +x turns with the recentre (to -z)", fx.z, -1.0, 1e-5);
+    // Round trip with the eye placement: an eye at tracking offset e (recentre identity) sits at
+    // world origin + ToWorld(anchor, e) * unitsPerMeter (EyeViewMatrix); mapping that world point
+    // back gives e.
+    const Vec3 e = { 0.1f, -0.2f, 0.3f };
+    const Vec3 w = AnchorToWorld(a, e);
+    p = WorldToTracking(a, 10.0f, id, { 0, 0, 0 }, { 100 + w.x * 10, 50 + w.y * 10, 20 + w.z * 10 }, ox, oy, oz);
+    checkNear("round trip x", p.position.x, 0.1, 1e-5);
+    checkNear("round trip y", p.position.y, -0.2, 1e-5);
+    checkNear("round trip z", p.position.z, 0.3, 1e-5);
+    const Quat q = QuatFromBasis({ 0, 0, -1 }, { 0, 1, 0 }, { 1, 0, 0 }); // 90 deg about +y
+    const Vec3 r = Rotate(q, { 1, 0, 0 });
+    checkNear("QuatFromBasis maps x to its first column", r.z, -1.0, 1e-5);
+}
+
 int main() {
     std::printf("gdx_vr_math_tests\n");
     CaseMatchesGameCamera("straight ahead", { 0, 0, 0 }, { 0, 0, -100 }, { 0, 1, 0 }, 70.0f, 0.0f, 0.0f);
@@ -338,6 +371,7 @@ int main() {
     CaseFixedPointFit();
     CaseDegenerate();
     CasePointer();
+    CaseWorldToTracking();
     std::printf("%d checks, %d failed\n", gChecks, gFails);
     return gFails == 0 ? 0 : 1;
 }

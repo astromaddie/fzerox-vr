@@ -75,10 +75,11 @@ bool InitSettings() {
         CVarSave();
     }
     gdx_port_logf("[vr] settings: stereo=%d wide_cull=%d camera_mode=%d horizon_lock=%d level_pitch=%d "
-                  "hud_aspect=%.3f hud_height=%.2f roof_forward=%.1f roof_clearance=%.1f cockpit_tilt=%.2f world_scale=%.1f haptics=%.2f refresh_rate=%d%s\n",
+                  "hud_aspect=%.3f hud_height=%.2f roof_forward=%.1f roof_clearance=%.1f cockpit_tilt=%.2f cockpit_style=%d cabin_seat=%.1f/%.1f world_scale=%.1f haptics=%.2f refresh_rate=%d%s\n",
                   SettingInt(kSetStereo), SettingInt(kSetWideCull), SettingInt(kSetCameraMode),
                   SettingInt(kSetHorizonLock), SettingInt(kSetLevelPitch), SettingFloat(kSetHudAspect), SettingFloat(kSetHudHeight),
                   SettingFloat(kSetRoofForward), SettingFloat(kSetRoofClearance), SettingFloat(kSetCockpitTilt),
+                  SettingInt(kSetCockpitStyle), SettingFloat(kSetCabinSeatUp), SettingFloat(kSetCabinSeatForward),
                   SettingFloat(kSetWorldScale),
                   SettingFloat(kSetHaptics), SettingInt(kSetRefreshRate), dirty ? " (saved)" : "");
     return dirty;

@@ -70,6 +70,10 @@ enum SettingId {
     kSetRoofForward, // cockpit eye, world units along the machine's forward from its origin
     kSetRoofClearance, // cockpit eye, world units above the machine's roof (CockpitRoofHeight)
     kSetCockpitTilt, // cockpit view follows the machine's lean and tilt: 0 travel frame .. 1 the body's
+    kSetCockpitStyle, // 0: on the roof; 1: inside a cabin (gdx_vr_cabin_table.h); roof when a machine has none
+    kSetCabinSeatUp, // cabin eye offset from the measured seat, world units
+    kSetCabinSeatForward,
+    kSetDashHudSize, // cabin dash HUD panels, as a fraction of the size that fills the dash
     kSetWorldScale,
     kSetHaptics, // scale for every haptic pulse (standard.md section 6), 0 = off
     kSetRefreshRate, // Hz ceiling for the display refresh-rate request (XR_FB_display_refresh_rate)

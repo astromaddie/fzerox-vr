@@ -3470,8 +3470,8 @@ class N64DisplayListAdapter {
                     v[i] = gGdxVrVehPrev[i] + (gGdxVrVehCur[i] - gGdxVrVehPrev[i]) * t;
                 }
             }
-            float roofForward = 0.0f, roofUp = 0.0f, tilt = 0.0f;
-            gdx_vr::CockpitOffsets(gGdxVrVehMachine, &roofForward, &roofUp, &tilt);
+            float roofForward = 0.0f, roofUp = 0.0f, side = 0.0f, tilt = 0.0f;
+            gdx_vr::CockpitOffsets(gGdxVrVehMachine, &roofForward, &roofUp, &side, &tilt);
             // Up blends from the travel frame to the body's (its lean and tilt) by CockpitTilt. The
             // heading stays the travel forward, flattened against that up, so a spin attack never
             // turns the view.
@@ -3494,10 +3494,35 @@ class N64DisplayListAdapter {
             }
             // The eye rides on this machine's roof: RoofForward along its forward, then the roof
             // height there (measured per stock model) plus RoofClearance up.
-            const float eye[3] = { v[0] + fwd[0] * roofForward + up[0] * roofUp,
-                                   v[1] + fwd[1] * roofForward + up[1] * roofUp,
-                                   v[2] + fwd[2] * roofForward + up[2] * roofUp };
+            // Model +x maps to up x forward (racer.c builds modelBasis.z = y cross x).
+            const float sideAxis[3] = { up[1] * fwd[2] - up[2] * fwd[1], up[2] * fwd[0] - up[0] * fwd[2],
+                                        up[0] * fwd[1] - up[1] * fwd[0] };
+            const float eye[3] = { v[0] + fwd[0] * roofForward + up[0] * roofUp + sideAxis[0] * side,
+                                   v[1] + fwd[1] * roofForward + up[1] * roofUp + sideAxis[1] * side,
+                                   v[2] + fwd[2] * roofForward + up[2] * roofUp + sideAxis[2] * side };
             const float at[3] = { eye[0] + fwd[0], eye[1] + fwd[1], eye[2] + fwd[2] };
+            {
+                // The body frame the cabin is drawn in (model up, travel forward flattened against it),
+                // for the dash HUD.
+                float bu[3] = { v[9], v[10], v[11] };
+                const float bl = std::sqrt(bu[0] * bu[0] + bu[1] * bu[1] + bu[2] * bu[2]);
+                if (bl > 1e-4f) {
+                    for (float& c : bu) {
+                        c /= bl;
+                    }
+                    const float ba = v[3] * bu[0] + v[4] * bu[1] + v[5] * bu[2];
+                    float bf[3] = { v[3] - ba * bu[0], v[4] - ba * bu[1], v[5] - ba * bu[2] };
+                    const float bfl = std::sqrt(bf[0] * bf[0] + bf[1] * bf[1] + bf[2] * bf[2]);
+                    if (bfl > 1e-4f) {
+                        for (float& c : bf) {
+                            c /= bfl;
+                        }
+                        const float bs[3] = { bu[1] * bf[2] - bu[2] * bf[1], bu[2] * bf[0] - bu[0] * bf[2],
+                                              bu[0] * bf[1] - bu[1] * bf[0] };
+                        gdx_vr::SetCockpitBody(v, bs, bu, bf, gGdxVrVehMachine);
+                    }
+                }
+            }
             // The roof under the eye is a few tenths of a metre away, inside the game camera's near
             // plane (16 units), so the cockpit uses its own. The game's own near is not an option:
             // depth clamp keeps nearer geometry on screen, but all of it then shares one depth and
@@ -9155,6 +9180,7 @@ extern "C" void gdx_gfx_run(void* dl, size_t dl_size, GdxTaskUcode taskUcode) {
             c->interp->SetVrEyeTanHalfY(gdx_vr::ActiveEyeTanHalfY());
             c->interp->SetVrFogRemap(gGdxVrEyeFogScale, gGdxVrEyeFogBias);
             c->interp->SetVrClipNotReject(gGdxVrEyeClipNotReject);
+            c->interp->SetVrCabinCut(gGdxVrEyeClipNotReject); // cockpit eyes; markers only in cabin ticks
             gdx_perf_sub_begin(GDX_PERF_SUB_IRUN);
             c->interp->StartFrame();
             c->interp->Run(reinterpret_cast<Gfx*>(c->commands), {});
@@ -9188,6 +9214,7 @@ extern "C" void gdx_gfx_run(void* dl, size_t dl_size, GdxTaskUcode taskUcode) {
             c->interp->SetVrPass(Fast::Interpreter::VrPass::HudOnly);
             c->interp->SetVrFogRemap(1.0f, 0.0f);
             c->interp->SetVrClipNotReject(false);
+            c->interp->SetVrCabinCut(false);
             // Rendered over black and over white; the presenter recovers coverage from the pair.
             void (*savedHook)(Fast::Interpreter*) = Fast::Interpreter::sPortAfterClearHook;
             if (whiteBackground != 0) {

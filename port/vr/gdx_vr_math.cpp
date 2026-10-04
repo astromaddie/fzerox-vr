@@ -80,6 +80,42 @@ bool RayHitsPanel(const Vec3& origin, const Vec3& dir, const Pose& panel, float 
     return true;
 }
 
+Quat QuatFromBasis(const Vec3& x, const Vec3& y, const Vec3& z) {
+    const float m00 = x.x, m01 = y.x, m02 = z.x;
+    const float m10 = x.y, m11 = y.y, m12 = z.y;
+    const float m20 = x.z, m21 = y.z, m22 = z.z;
+    const float trace = m00 + m11 + m22;
+    if (trace > 0.0f) {
+        const float s = std::sqrt(trace + 1.0f) * 2.0f;
+        return { (m21 - m12) / s, (m02 - m20) / s, (m10 - m01) / s, 0.25f * s };
+    }
+    if (m00 > m11 && m00 > m22) {
+        const float s = std::sqrt(1.0f + m00 - m11 - m22) * 2.0f;
+        return { 0.25f * s, (m01 + m10) / s, (m02 + m20) / s, (m21 - m12) / s };
+    }
+    if (m11 > m22) {
+        const float s = std::sqrt(1.0f + m11 - m00 - m22) * 2.0f;
+        return { (m01 + m10) / s, 0.25f * s, (m12 + m21) / s, (m02 - m20) / s };
+    }
+    const float s = std::sqrt(1.0f + m22 - m00 - m11) * 2.0f;
+    return { (m02 + m20) / s, (m12 + m21) / s, 0.25f * s, (m10 - m01) / s };
+}
+
+Pose WorldToTracking(const Anchor& anchor, float unitsPerMeter, const Quat& recentreYaw, const Vec3& recentreOrigin,
+                     const Vec3& worldPos, const Vec3& worldX, const Vec3& worldY, const Vec3& worldZ) {
+    // World -> the anchor's axes (right, up, back = tracking x, y, z), in metres; then undo the
+    // recentre: rotate by its yaw and add its origin.
+    const auto toAnchor = [&](const Vec3& v) { return Vec3{ Dot(v, anchor.right), Dot(v, anchor.up), Dot(v, anchor.back) }; };
+    const Vec3 d = { worldPos.x - anchor.origin.x, worldPos.y - anchor.origin.y, worldPos.z - anchor.origin.z };
+    const Vec3 local = Scale(toAnchor(d), 1.0f / unitsPerMeter);
+    const Vec3 r = Rotate(recentreYaw, local);
+    Pose out;
+    out.position = { r.x + recentreOrigin.x, r.y + recentreOrigin.y, r.z + recentreOrigin.z };
+    out.orientation = QuatFromBasis(Rotate(recentreYaw, toAnchor(worldX)), Rotate(recentreYaw, toAnchor(worldY)),
+                                    Rotate(recentreYaw, toAnchor(worldZ)));
+    return out;
+}
+
 bool BeamPose(const Vec3& from, const Vec3& to, const Vec3& viewer, Pose* out, float* length) {
     Vec3 y = { to.x - from.x, to.y - from.y, to.z - from.z };
     const float len = std::sqrt(Dot(y, y));
@@ -96,25 +132,7 @@ bool BeamPose(const Vec3& from, const Vec3& to, const Vec3& viewer, Pose* out, f
         Normalize(&z);
     }
     const Vec3 x = Cross(y, z);
-    // Rotation matrix with columns x, y, z -> quaternion.
-    const float m00 = x.x, m01 = y.x, m02 = z.x;
-    const float m10 = x.y, m11 = y.y, m12 = z.y;
-    const float m20 = x.z, m21 = y.z, m22 = z.z;
-    Quat q;
-    const float trace = m00 + m11 + m22;
-    if (trace > 0.0f) {
-        const float s = std::sqrt(trace + 1.0f) * 2.0f;
-        q = { (m21 - m12) / s, (m02 - m20) / s, (m10 - m01) / s, 0.25f * s };
-    } else if (m00 > m11 && m00 > m22) {
-        const float s = std::sqrt(1.0f + m00 - m11 - m22) * 2.0f;
-        q = { 0.25f * s, (m01 + m10) / s, (m02 + m20) / s, (m21 - m12) / s };
-    } else if (m11 > m22) {
-        const float s = std::sqrt(1.0f + m11 - m00 - m22) * 2.0f;
-        q = { (m01 + m10) / s, 0.25f * s, (m12 + m21) / s, (m02 - m20) / s };
-    } else {
-        const float s = std::sqrt(1.0f + m22 - m00 - m11) * 2.0f;
-        q = { (m02 + m20) / s, (m12 + m21) / s, 0.25f * s, (m10 - m01) / s };
-    }
+    const Quat q = QuatFromBasis(x, y, z);
     out->orientation = q;
     out->position = centre;
     *length = len;

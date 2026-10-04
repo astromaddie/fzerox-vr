@@ -1124,6 +1124,53 @@ void GdxMenu::RegisterMenu() {
                                    .Tooltip("1 leans and tilts with your machine's body; 0 follows only the track.\n"
                                             "In between is a partial tilt. Horizon lock removes the roll entirely."))
                       .SearchTerms("cockpit tilt lean roll bank comfort"));
+        AddWidget("VR", "VR Settings", SECTION_COLUMN_1,
+                  WidgetInfo{ .name = "Sit inside a cabin", .cVar = "gEnhancements.VR.CockpitStyle",
+                              .type = GdxUI::WIDGET_CVAR_CHECKBOX }
+                      .Options(UIWidgets::CheckboxOptions().DefaultValue(true).Tooltip(
+                          "Cockpit view seats you inside a cabin in your machine, under its own canopy\n"
+                          "where it has one. Off: you ride on the roof. Custom machines always ride on the roof."))
+                      .SearchTerms("cockpit cabin inside seat canopy roof"));
+        AddWidget("VR", "VR Settings", SECTION_COLUMN_1,
+                  WidgetInfo{ .name = "Cabin seat height", .cVar = "gEnhancements.VR.CabinSeatUp",
+                              .type = GdxUI::WIDGET_CVAR_SLIDER_FLOAT }
+                      .Options(UIWidgets::FloatSliderOptions{ .flags = ImGuiSliderFlags_AlwaysClamp }
+                                   .Format("%.1f")
+                                   .Min(-10.0f)
+                                   .Max(10.0f)
+                                   .Step(0.5f)
+                                   .DefaultValue(0.0f)
+                                   .ShowButtons(false)
+                                   .LabelPosition(UIWidgets::LabelPositions::Near)
+                                   .Tooltip("Raises or lowers your seat in the cabin, in game units."))
+                      .SearchTerms("cabin seat height"));
+        AddWidget("VR", "VR Settings", SECTION_COLUMN_1,
+                  WidgetInfo{ .name = "Cabin seat forward", .cVar = "gEnhancements.VR.CabinSeatForward",
+                              .type = GdxUI::WIDGET_CVAR_SLIDER_FLOAT }
+                      .Options(UIWidgets::FloatSliderOptions{ .flags = ImGuiSliderFlags_AlwaysClamp }
+                                   .Format("%.1f")
+                                   .Min(-10.0f)
+                                   .Max(10.0f)
+                                   .Step(0.5f)
+                                   .DefaultValue(0.0f)
+                                   .ShowButtons(false)
+                                   .LabelPosition(UIWidgets::LabelPositions::Near)
+                                   .Tooltip("Moves your seat in the cabin forward (positive) or back, in game units."))
+                      .SearchTerms("cabin seat forward back"));
+        AddWidget("VR", "VR Settings", SECTION_COLUMN_1,
+                  WidgetInfo{ .name = "Dash HUD size", .cVar = "gEnhancements.VR.DashHudSize",
+                              .type = GdxUI::WIDGET_CVAR_SLIDER_FLOAT }
+                      .Options(UIWidgets::FloatSliderOptions{ .flags = ImGuiSliderFlags_AlwaysClamp }
+                                   .Format("%.2f")
+                                   .Min(0.15f)
+                                   .Max(1.0f)
+                                   .Step(0.05f)
+                                   .DefaultValue(0.45f)
+                                   .ShowButtons(false)
+                                   .LabelPosition(UIWidgets::LabelPositions::Near)
+                                   .Tooltip("Size of the energy and speed readouts on the cabin dash\n"
+                                            "(1 fills the dash)."))
+                      .SearchTerms("dash hud size energy speed cabin"));
 
         AddWidget("VR", "VR Settings", SECTION_COLUMN_1,
                   WidgetInfo{ .name = "View", .type = GdxUI::WIDGET_SEPARATOR_TEXT });

@@ -33,6 +33,10 @@ const SettingInfo kSettings[kSettingCount] = {
     { "gEnhancements.VR.RoofForward", false, 5.8, -12.0, 12.0 },  // cockpit eye, world units
     { "gEnhancements.VR.RoofClearance", false, 3.5, 0.0, 20.0 },  // (cockpit defaults: worn tuning)
     { "gEnhancements.VR.CockpitTilt", false, 0.5, 0.0, 1.0 },     // 0 travel frame .. 1 machine body
+    { "gEnhancements.VR.CockpitStyle", true, 1.0, 0.0, 1.0 },     // 0 roof, 1 cabin
+    { "gEnhancements.VR.CabinSeatUp", false, 0.0, -10.0, 10.0 },  // world units from the measured seat
+    { "gEnhancements.VR.CabinSeatForward", false, 0.0, -10.0, 10.0 },
+    { "gEnhancements.VR.DashHudSize", false, 0.45, 0.15, 1.0 },  // first worn: full size too large
     { "gEnhancements.VR.WorldScale", false, 1.0, 1.0, 50.0 },     // world units per metre
     { "gEnhancements.VR.Haptics", false, 0.6, 0.0, 1.0 },         // pulse strength scale
     { "gEnhancements.VR.RefreshRate", true, 90.0, 60.0, 144.0 },  // Hz ceiling, highest offered <= it

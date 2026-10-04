@@ -247,6 +247,13 @@ static void CaseSettings() {
     check("roof forward clamps to the measured span", SanitizeSetting(kSetRoofForward, 40.0) == 12.0 &&
                                                         SanitizeSetting(kSetRoofForward, -40.0) == -12.0);
     check("roof clearance cannot go below the roof", SanitizeSetting(kSetRoofClearance, -5.0) == 0.0);
+    check("cockpit style is 0 (roof) or 1 (cabin), cabin by default",
+          SanitizeSetting(kSetCockpitStyle, 3.0) == 1.0 && SanitizeSetting(kSetCockpitStyle, -1.0) == 0.0 &&
+              Setting(kSetCockpitStyle).def == 1.0);
+    check("dash HUD size clamps to 0.15..1", SanitizeSetting(kSetDashHudSize, 0.0) == 0.15 &&
+                                                SanitizeSetting(kSetDashHudSize, 5.0) == 1.0);
+    check("cabin seat offsets clamp to +-10", SanitizeSetting(kSetCabinSeatUp, 50.0) == 10.0 &&
+                                                SanitizeSetting(kSetCabinSeatForward, -50.0) == -10.0);
     check("cockpit tilt clamps to 0..1", SanitizeSetting(kSetCockpitTilt, -1.0) == 0.0 &&
                                          SanitizeSetting(kSetCockpitTilt, 2.0) == 1.0 &&
                                          SanitizeSetting(kSetCockpitTilt, 0.5) == 0.5);
