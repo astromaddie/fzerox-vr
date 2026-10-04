@@ -468,8 +468,9 @@ edits all of these except `Stereo` and `WideCull`.
       under 10%), green on the right while boost is available (flashing while boosting). Labels under
       them, drawn once in a 5x7 pixel font into a small swapchain and shown as quads only while their
       lamp is lit (`gGdxVrCabinLamp`): "CHECK ENGINE" and "BOOST READY". The user picked the sills
-      from three offline-rendered placements (glare-shield strip, mirror/boost bar/pod, sills). An
-      amber racer-behind lamp was dropped: the game's own CHECK warning and the mirror cover it.
+      from three offline-rendered placements (glare-shield strip, mirror/boost bar/pod, sills).
+      Amber racer-behind lamps sit at both ends of the rear-view mirror and blink while a racer is
+      within the game's CHECK distance (faster under 1000), to draw the eye to the mirror.
     - Rear-view mirror (`CabinMirror`, on): a third world replay per tick from the cockpit anchor
       raised 4 model units above the canopy top (the cabin's bulkhead fills it otherwise), turned
       180 degrees, 60 x 20 degree FOV, 768x256, copied flipped left to right into its own swapchain

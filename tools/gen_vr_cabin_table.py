@@ -181,12 +181,23 @@ def cabin_geometry(cab, generic):
     # Warning lamps on the sills' inner lips, just behind the dash, in the viewer's peripheral vision:
     # low energy on the left sill (the host's "CHECK ENGINE" label under it), boost on the right
     # ("BOOST READY"). Model +x is the viewer's left. The C side colours them every tick; the host's
-    # kSillLabels and SillLampFrame() must match this placement. (There is no racer-behind lamp: the
-    # game's own CHECK warning and the rear-view mirror already cover it.)
+    # kSillLabels / SillLabelPanel must match this placement.
     for side, part in ((1, "LAMP_ENERGY"), (-1, "LAMP_BOOST")):
         c, along, tilt = sill_lamp_frame(cab, side)
         quad(out, P[part], *[tuple(c[i] + tilt[i] * 1.2 + along[i] * du + tilt[i] * dv for i in range(3))
                              for du, dv in ((-4, 1.2), (4, 1.2), (4, -1.2), (-4, -1.2))])
+    # Racer-behind lamps at both ends of the rear-view mirror, blinking to draw the eye to it (the
+    # user's idea). The host draws the mirror itself: centred at (cx, top - 7, z1 - 4), 0.55 half-widths
+    # wide, 3:1, leaning back 8 degrees (gdx_openxr.cpp AddCabinHudLayers); these sit just in front of
+    # its ends.
+    mw = 0.55 * hw
+    mh = mw / 3
+    me = math.radians(8.0)
+    my_axis = (0.0, math.cos(me), math.sin(me))
+    for s in (-1, 1):
+        mc = (s * (mw / 2 + 2.2), top - 7, z1 - 4 - 0.3)
+        quad(out, P["LAMP_BEHIND"], *[tuple(mc[i] + (du if i == 0 else 0.0) + my_axis[i] * dv for i in range(3))
+                                      for du, dv in ((-1.6, 0.4 * mh), (1.6, 0.4 * mh), (1.6, -0.4 * mh), (-1.6, -0.4 * mh))])
     if generic:
         zf = z1 - 4
         zn = z1 + 0.25 * L
