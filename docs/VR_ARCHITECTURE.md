@@ -453,12 +453,24 @@ edits all of these except `Stereo` and `WideCull`.
     (`gdx_register_host_wide_command_range`): in the executable's static data the bridge read the
     vertices as N64 data (scrambled axes), and unregistered RDRAM lists as 8-byte commands (nothing
     drawn). `CabinSeatUp` / `CabinSeatForward` (+-10 world units) adjust the seat.
-  - **Dash HUD** (cabin only): the energy meter and speed readout are crops (`imageRect`) of the
-    race HUD swapchain, shown as quad layers on the dash face, posed from the machine's body frame
-    through the cockpit eye anchor into LOCAL (`WorldToTracking`); `DashHudSize` (0.45, first wear
-    found full size too large) scales them. The rest of the HUD floats as before, as two crops that
-    leave those corners out. Crops assume OpenGL bottom-up rows (`HudRect`); not yet confirmed in the
-    headset, along with the size.
+  - **Dash** (cabin only), aiming at a real dashboard:
+    - HUD crops (`imageRect`) of the race HUD swapchain as quad layers, posed from the machine's body
+      frame through the cockpit eye anchor into LOCAL (`WorldToTracking`; `kDashPanels`): energy
+      (front left) and timer (behind it) and speed (right) lie on the dash face; the minimap stands
+      upright in the centre like a console screen. `DashHudSize` (0.45; first wear found full size
+      too large) scales them. Only portraits, lap, position and centre messages still float (one
+      crop). Crops assume OpenGL bottom-up rows (`HudRect`).
+    - Three warning lamps along the dash's front edge (cabin geometry, unlit, coloured per tick in
+      `gdx_cabin_lamps`): red for energy under 25% (faster under 10%), amber for a racer within the
+      game's "CHECK" distance (3000; faster under 1000), green while boost is available (flashing
+      while boosting).
+    - Rear-view mirror (`CabinMirror`, on): a third world replay per tick from the cockpit anchor
+      raised 4 model units above the canopy top (the cabin's bulkhead fills it otherwise), turned
+      180 degrees, 60 x 20 degree FOV, 768x256, copied flipped left to right into its own swapchain
+      and shown as a quad at the top of the windscreen. `GDX_VR_DUMP_FRAME` also writes
+      `vr-mirror.bmp` (unflipped).
+    - Not yet run on the Frame: layout, lamps and mirror (cost and view) are build- and test-verified
+      only.
   - The pose is snapshotted per tick with the camera poses and interpolated at the frame's t, so it
     stays phase-locked to the rendered machine.
   - Verified unattended (before the tilt and near-plane change): a forced-render cockpit eye dump in

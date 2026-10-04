@@ -74,6 +74,7 @@ enum SettingId {
     kSetCabinSeatUp, // cabin eye offset from the measured seat, world units
     kSetCabinSeatForward,
     kSetDashHudSize, // cabin dash HUD panels, as a fraction of the size that fills the dash
+    kSetCabinMirror, // rear-view mirror in the cabin: one extra low-resolution render per tick
     kSetWorldScale,
     kSetHaptics, // scale for every haptic pulse (standard.md section 6), 0 = off
     kSetRefreshRate, // Hz ceiling for the display refresh-rate request (XR_FB_display_refresh_rate)

@@ -37,6 +37,7 @@ const SettingInfo kSettings[kSettingCount] = {
     { "gEnhancements.VR.CabinSeatUp", false, 0.0, -10.0, 10.0 },  // world units from the measured seat
     { "gEnhancements.VR.CabinSeatForward", false, 0.0, -10.0, 10.0 },
     { "gEnhancements.VR.DashHudSize", false, 0.45, 0.15, 1.0 },  // first worn: full size too large
+    { "gEnhancements.VR.CabinMirror", true, 1.0, 0.0, 1.0 },
     { "gEnhancements.VR.WorldScale", false, 1.0, 1.0, 50.0 },     // world units per metre
     { "gEnhancements.VR.Haptics", false, 0.6, 0.0, 1.0 },         // pulse strength scale
     { "gEnhancements.VR.RefreshRate", true, 90.0, 60.0, 144.0 },  // Hz ceiling, highest offered <= it

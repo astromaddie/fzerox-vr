@@ -1837,6 +1837,9 @@ extern char* getenv(const char* name);
    command buffer is registered as a PORT-format (16-byte) list range. */
 static Vtx* sGdxCabinVtx = NULL;
 static Gfx* sGdxCabinGfx = NULL;
+#define GDX_CABIN_LAMPS 3
+#define GDX_CABIN_LAMP_GFX 16
+static Gfx* sGdxCabinLampGfx = NULL; /* GDX_CABIN_LAMPS sub-lists of GDX_CABIN_LAMP_GFX commands */
 static s32 sGdxCabinBuiltFor = -1; /* machine | body colour, packed; -1: nothing built */
 
 static const u8 kGdxCabinPartRgb[GDX_CABIN_PART_COUNT][3] = {
@@ -1921,6 +1924,8 @@ static Gfx* gdx_cabin_dl(s32 machine, u8 bodyR, u8 bodyG, u8 bodyB) {
     if (sGdxCabinVtx == NULL) {
         sGdxCabinVtx = (Vtx*)gdx_rdram_persist_alloc_raw(sizeof(Vtx) * GDX_CABIN_MAX_TRIS * 6, 16);
         sGdxCabinGfx = (Gfx*)gdx_rdram_persist_alloc_raw(sizeof(Gfx) * (GDX_CABIN_MAX_TRIS + 64), 16);
+        sGdxCabinLampGfx = (Gfx*)gdx_rdram_persist_alloc_raw(sizeof(Gfx) * GDX_CABIN_LAMPS * GDX_CABIN_LAMP_GFX, 16);
+        gdx_register_host_wide_command_range(sGdxCabinLampGfx, sizeof(Gfx) * GDX_CABIN_LAMPS * GDX_CABIN_LAMP_GFX);
         /* RDRAM is read as raw N64 data (8-byte big-endian commands) unless registered as holding
            PORT-format (16-byte) lists like this one. The vertices stay unregistered: RDRAM
            vertices are read natively. */
@@ -1934,8 +1939,9 @@ static Gfx* gdx_cabin_dl(s32 machine, u8 bodyR, u8 bodyG, u8 bodyB) {
     /* Lit like the hull: colour from PRIMITIVE, shaded by the game's lights in the second cycle. */
     gDPSetCombineLERP(g++, 0, 0, 0, PRIMITIVE, 0, 0, 0, PRIMITIVE, COMBINED, 0, SHADE, 0, 0, 0, 0, COMBINED);
     for (part = 0; part < GDX_CABIN_PART_COUNT; part++) {
-        if (part == GDX_CABIN_PART_GLASS_OWN || part == GDX_CABIN_PART_GLASS_GENERIC) {
-            continue;
+        if (part == GDX_CABIN_PART_GLASS_OWN || part == GDX_CABIN_PART_GLASS_GENERIC ||
+            part >= GDX_CABIN_PART_LAMP_ENERGY) {
+            continue; /* glass below; lamps are separate lists, coloured per tick */
         }
         if (part == GDX_CABIN_PART_BODY) {
             gDPSetPrimColor(g++, 0, 0, bodyR, bodyG, bodyB, 255);
@@ -1958,8 +1964,44 @@ static Gfx* gdx_cabin_dl(s32 machine, u8 bodyR, u8 bodyG, u8 bodyB) {
         g = gdx_cabin_emit_part(g, &vtxUsed, m, GDX_CABIN_PART_GLASS_GENERIC);
     }
     gSPEndDisplayList(g++);
+    for (part = 0; part < GDX_CABIN_LAMPS; part++) {
+        Gfx* lg = &sGdxCabinLampGfx[part * GDX_CABIN_LAMP_GFX];
+        lg = gdx_cabin_emit_part(lg, &vtxUsed, m, GDX_CABIN_PART_LAMP_ENERGY + part);
+        gSPEndDisplayList(lg++);
+    }
     sGdxCabinBuiltFor = key;
     return sGdxCabinGfx;
+}
+
+/* Dash warning lamps from the racer's state: low energy (red), racer close behind (amber, as the
+   game's "CHECK" warning), boost available (green, flashing while boosting). Unlit, so they glow. */
+static Gfx* gdx_cabin_lamps(Gfx* gfx, const Racer* racer) {
+    static u32 sTick = 0;
+    const f32 energy = (racer->maxEnergy > 0.0f) ? racer->energy / racer->maxEnergy : 1.0f;
+    const f32 behind = racer->distanceFromRacerBehind;
+    u8 rgb[GDX_CABIN_LAMPS][3];
+    s32 on[GDX_CABIN_LAMPS];
+    s32 i;
+
+    sTick++;
+    on[0] = (energy < 0.25f) && ((sTick / ((energy < 0.1f) ? 4 : 10)) % 2 == 0);
+    on[1] = (behind < 3000.0f) && ((sTick / ((behind < 1000.0f) ? 4 : 10)) % 2 == 0);
+    if (racer->boostTimer != 0) {
+        on[2] = (sTick / 3) % 2 == 0;
+    } else {
+        on[2] = (racer->stateFlags & RACER_STATE_CAN_BOOST) && racer->energy != 0.0f;
+    }
+    rgb[0][0] = on[0] ? 255 : 60; rgb[0][1] = on[0] ? 40 : 14;  rgb[0][2] = on[0] ? 40 : 14;
+    rgb[1][0] = on[1] ? 255 : 60; rgb[1][1] = on[1] ? 170 : 40; rgb[1][2] = on[1] ? 20 : 8;
+    rgb[2][0] = on[2] ? 60 : 12;  rgb[2][1] = on[2] ? 255 : 50; rgb[2][2] = on[2] ? 90 : 18;
+
+    gDPPipeSync(gfx++);
+    gDPSetCombineLERP(gfx++, 0, 0, 0, PRIMITIVE, 0, 0, 0, PRIMITIVE, 0, 0, 0, COMBINED, 0, 0, 0, COMBINED);
+    for (i = 0; i < GDX_CABIN_LAMPS; i++) {
+        gDPSetPrimColor(gfx++, 0, 0, rgb[i][0], rgb[i][1], rgb[i][2], 255);
+        gSPDisplayList(gfx++, &sGdxCabinLampGfx[i * GDX_CABIN_LAMP_GFX]);
+    }
+    return gfx;
 }
 
 /* Racer_Draw: before the machine's LOD list. Returns the stock model (and emits the cut-begin
@@ -1997,6 +2039,7 @@ s32 gdx_vr_cabin_begin(Gfx** gfx, const Racer* racer) {
 Gfx* gdx_vr_cabin_end(Gfx* gfx, const Racer* racer, s32 machine, Gfx* setupDl) {
     gDma0p(gfx++, G_NOOP, 0, (0x5C << 16));
     gSPDisplayList(gfx++, gdx_cabin_dl(machine, racer->bodyR, racer->bodyG, racer->bodyB));
+    gfx = gdx_cabin_lamps(gfx, racer);
     gSPDisplayList(gfx++, setupDl);
     return gfx;
 }

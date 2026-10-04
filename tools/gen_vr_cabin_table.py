@@ -32,7 +32,7 @@ REPO = Path(__file__).resolve().parent.parent
 
 # Parts: the C side maps each to a colour (BODY uses the racer's body colour).
 PARTS = ["FLOOR", "WALL", "BODY", "BULKHEAD", "HEADREST", "DASH", "GAUGE_CYAN", "GAUGE_AMBER", "GAUGE_RED",
-         "FRAME", "GLASS_OWN", "GLASS_GENERIC"]
+         "FRAME", "GLASS_OWN", "GLASS_GENERIC", "LAMP_ENERGY", "LAMP_BEHIND", "LAMP_BOOST"]
 P = {name: i for i, name in enumerate(PARTS)}
 
 CMD = re.compile(
@@ -152,8 +152,17 @@ def cabin_geometry(cab, generic):
     quad(out, P["HEADREST"], (-hr, top - 12, zr), (hr, top - 12, zr), (hr, top - 12, zr + 8), (-hr, top - 12, zr + 8))
     zd = z1 - 0.35 * L
     quad(out, P["DASH"], (-hw, sill - 4, zd), (hw, sill - 4, zd), (hw, sill + 4, zd + 14), (-hw, sill + 4, zd + 14))
-    # No gauges: the game's own energy meter and speed readout are shown on this dash face (the VR
-    # host places crops of the race HUD there; GDX_CABIN dash centre and half-width below).
+    # No gauges: the game's own energy meter, speed, timer and minimap are shown on this dash face
+    # (the VR host places crops of the race HUD there). Three warning lamps sit along its front edge,
+    # left to right as the viewer sees them (the viewer's right is model -x): low energy, racer
+    # behind, boost; the C side colours them from game state every tick.
+    for across, part in ((-0.25, "LAMP_ENERGY"), (0.0, "LAMP_BEHIND"), (0.25, "LAMP_BOOST")):
+        lx = -across * hw
+        # A small raised lens, 0.8 model units above the dash surface near its front edge.
+        za, zb = zd + 10.0, zd + 13.0
+        ya = sill - 4 + 8 * (za - zd) / 14 + 0.8
+        yb = sill - 4 + 8 * (zb - zd) / 14 + 0.8
+        quad(out, P[part], (lx - 3, ya, za), (lx + 3, ya, za), (lx + 3, yb, zb), (lx - 3, yb, zb))
     if generic:
         zf = z1 - 4
         zn = z1 + 0.25 * L

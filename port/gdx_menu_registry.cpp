@@ -1171,6 +1171,13 @@ void GdxMenu::RegisterMenu() {
                                    .Tooltip("Size of the energy and speed readouts on the cabin dash\n"
                                             "(1 fills the dash)."))
                       .SearchTerms("dash hud size energy speed cabin"));
+        AddWidget("VR", "VR Settings", SECTION_COLUMN_1,
+                  WidgetInfo{ .name = "Rear-view mirror", .cVar = "gEnhancements.VR.CabinMirror",
+                              .type = GdxUI::WIDGET_CVAR_CHECKBOX }
+                      .Options(UIWidgets::CheckboxOptions().DefaultValue(true).Tooltip(
+                          "A mirror at the top of the cabin windscreen showing what is behind you.\n"
+                          "Costs one extra low-resolution render per game tick."))
+                      .SearchTerms("mirror rear view behind cabin"));
 
         AddWidget("VR", "VR Settings", SECTION_COLUMN_1,
                   WidgetInfo{ .name = "View", .type = GdxUI::WIDGET_SEPARATOR_TEXT });
