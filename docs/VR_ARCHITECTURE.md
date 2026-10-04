@@ -467,7 +467,7 @@ edits all of these except `Stereo` and `WideCull`.
       `gdx_cabin_lamps`): red for energy under 25% (faster under 10%), amber for a racer within the
       game's "CHECK" distance (3000; faster under 1000), green while boost is available (flashing
       while boosting). Labels beside them, drawn once in a 5x7 pixel font into a small swapchain
-      and shown as quads on the dash face only while their lamp is lit (`gGdxVrCabinLamp`):
+      and shown small, centred under their lamps, only while the lamp is lit (`gGdxVrCabinLamp`):
       "CHECK ENGINE" blinks with the low-energy lamp, "BOOST READY" shows with the boost lamp.
     - Rear-view mirror (`CabinMirror`, on): a third world replay per tick from the cockpit anchor
       raised 4 model units above the canopy top (the cabin's bulkhead fills it otherwise), turned

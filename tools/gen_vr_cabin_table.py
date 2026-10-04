@@ -166,14 +166,14 @@ def cabin_geometry(cab, generic):
     quad(out, P["DASH"], (-hw, yt, zt), (hw, yt, zt), (hw, yt, zt + DASH_SHELF), (-hw, yt, zt + DASH_SHELF))
     quad(out, P["WALL"], (-hw, fl, zd), (hw, fl, zd), (hw, yb, zd), (-hw, yb, zd))  # below the face
     # Three warning lamps along the bottom of the face (on the shelf they were seen edge-on), as the
-    # viewer sees them: low energy at the far left (the host's "CHECK ENGINE" label beside it), then
-    # racer behind and boost on the right ("BOOST READY" beside it); the viewer's right is model -x.
+    # viewer sees them: low energy at the far left (the host's "CHECK ENGINE" label under it), then
+    # racer behind and boost on the right ("BOOST READY" under it); the viewer's right is model -x.
     # The C side colours them every tick; gdx_openxr.cpp kDashLabels must match these positions.
     lean = math.radians(DASH_LEAN_DEG)
     up_face = (math.cos(lean), math.sin(lean))    # (y, z) up the face
     normal = (math.sin(lean), -math.cos(lean))    # (y, z) towards the viewer
     yc, zc = (yb + yt) / 2, (zd + zt) / 2
-    for across, v, part in ((-0.78, -6.5, "LAMP_ENERGY"), (0.28, -6.5, "LAMP_BEHIND"), (0.46, -6.5, "LAMP_BOOST")):
+    for across, v, part in ((-0.78, -4.5, "LAMP_ENERGY"), (0.28, -4.5, "LAMP_BEHIND"), (0.46, -4.5, "LAMP_BOOST")):
         lx = -across * hw
         def pt(du, dv):
             return (lx + du, yc + (v + dv) * up_face[0] + 0.8 * normal[0], zc + (v + dv) * up_face[1] + 0.8 * normal[1])

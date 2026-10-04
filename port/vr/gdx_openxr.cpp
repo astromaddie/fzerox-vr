@@ -2088,18 +2088,18 @@ void HudDashPanel(XrCompositionLayerQuad* q, const DashPanel& d, const float das
     q->subImage.imageRect = r;
 }
 
-// The warning lamps' labels, beside their lamps (tools/gen_vr_cabin_table.py: the low-energy lamp
-// at -0.78, boost at 0.46, both 6.5 model units down the face): "CHECK ENGINE" blinks with the
-// low-energy lamp, "BOOST READY" shows with the boost lamp. Not scaled by DashHudSize: they belong
-// to the lamps, which are part of the cabin.
+// The warning lamps' labels, centred under their lamps (tools/gen_vr_cabin_table.py: the low-energy
+// lamp at -0.78, boost at 0.46, both 4.5 model units down the face, 3 tall): "CHECK ENGINE" blinks
+// with the low-energy lamp, "BOOST READY" shows with the boost lamp. Small fixed text (first look:
+// beside the lamps at dash-width scale it was too large and overlapped the dash readouts).
 struct DashLabel {
     int row;  // kLabelText row
     int lamp; // gGdxVrCabinLamp index that shows it
-    float across, along, width; // width in dash half-widths
+    float across, along, height; // height in model units (the text row, padding included)
 };
 const DashLabel kDashLabels[] = {
-    { 0, 0, -0.48f, -6.5f, 0.40f },
-    { 1, 2, 0.74f, -6.5f, 0.36f },
+    { 0, 0, -0.78f, -7.4f, 1.3f },
+    { 1, 2, 0.46f, -7.4f, 1.3f },
 };
 constexpr int kDashLabelCount = sizeof(kDashLabels) / sizeof(kDashLabels[0]);
 
@@ -2108,8 +2108,7 @@ void DashLabelPanel(XrCompositionLayerQuad* q, const DashLabel& l, const float d
     const int w = LabelTexelWidth(l.row);
     // Row 0 is the picture's top row; GL images count rows from the bottom.
     const XrRect2Di r = { { 0, s.labels.height - (l.row + 1) * kLabelHeight }, { w, kLabelHeight } };
-    const float widthModel = l.width * halfWidth;
-    PlaceOnDash(q, dashCentre, halfWidth, l.across, l.along, widthModel, widthModel * kLabelHeight / w, kDashFaceDeg);
+    PlaceOnDash(q, dashCentre, halfWidth, l.across, l.along, l.height * w / kLabelHeight, l.height, kDashFaceDeg);
     q->subImage.swapchain = s.labels.handle;
     q->subImage.imageRect = r;
 }
