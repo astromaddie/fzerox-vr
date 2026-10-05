@@ -806,6 +806,12 @@ void SyncInput() {
         gdx_imgui_nav_set_external(nullptr);
         return;
     }
+    static bool sLiveLogged = false;
+    if (!sLiveLogged) {
+        // Diagnostics for "the first presses do nothing until Start" (wear feedback 2026-10-05).
+        sLiveLogged = true;
+        gdx_port_logf("[openxr] controller actions live (session focused) at game mode %d\n", gGameMode);
+    }
     XrActiveActionSet active{ in.set, XR_NULL_PATH };
     XrActionsSyncInfo si{ XR_TYPE_ACTIONS_SYNC_INFO };
     si.countActiveActionSets = 1;
@@ -1004,6 +1010,11 @@ void MergeXrInput(GdxInputPad* pad) {
     const XrInput& in = S().input;
     if (!in.any) {
         return;
+    }
+    static bool sFirstLogged = false;
+    if (!sFirstLogged && in.pad.buttons != 0) {
+        sFirstLogged = true;
+        gdx_port_logf("[openxr] first controller buttons 0x%04x at game mode %d\n", in.pad.buttons, gGameMode);
     }
     pad->buttons |= in.pad.buttons;
     if (std::abs(in.pad.stickX) > std::abs(pad->stickX)) {

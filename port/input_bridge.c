@@ -803,6 +803,15 @@ void gdx_controller_poll(void) {
         memset(connected, 0, sizeof(connected));
     }
 
+    {
+        // Diagnostics for "the first presses do nothing until Start" (wear feedback 2026-10-05).
+        static int sFirstLogged = 0;
+        if (!sFirstLogged && buttons[0] != 0) {
+            sFirstLogged = 1;
+            gdx_port_logf("[input] first pad buttons 0x%04x at game mode %d\n", buttons[0], gGameMode);
+        }
+    }
+
     // Port 1 is pinned connected — see the PORT 1 IS PINNED note on gdx_sync_controller_ports().
     // It is also what keeps the "ControlDeck unavailable" path usable: zero input, but still a
     // controller the game will accept.
