@@ -68,6 +68,10 @@ void PresentStereoTick(const StereoCallbacks& callbacks);
 // unitsPerMeter: world units per tracked metre; 0 uses gEnhancements.VR.WorldScale (the chase view).
 bool BuildActiveEyeProjView(const float eye[3], const float at[3], const float up[3], float nearZ, float farZ,
                             float out[4][4], bool levelPitch, float unitsPerMeter);
+// The projection-view matrix the last BuildActiveEyeProjView built, for positions relative to the
+// `eye` it was given (gdx_vr::EyeProjViewRelative): unfitted float, for the interpreter's
+// camera-relative eye projection. False when no eye matrix was built this replay.
+bool ActiveEyeRelativeProjView(float out[4][4]);
 
 // Cockpit view: the viewer rides on the machine's roof instead of the chase camera.
 // Toggled with the Steam Frame controller's right B button; starts from gEnhancements.VR.CameraMode
@@ -81,8 +85,14 @@ bool CockpitMode();
 // `side`: world units along the machine's model +x (up x forward); the cabin seat is off-centre in
 // Twin Noritta's hull, 0 everywhere else.
 void CockpitOffsets(int machine, float* forward, float* up, float* side, float* tilt);
-// The followed machine's body frame (world position, and its model +x, up and forward axes) for this
-// frame's cockpit eyes, so the cabin dash can carry the energy and speed HUD crops.
+// Cabin style (gEnhancements.VR.CockpitStyle 1) with cabin data for `machine`: the measured seat in
+// model units, and the wearer's offsets from it (CabinSeatForward / CabinSeatUp, world units along
+// the body's forward and up). False for the roof view.
+bool CabinEyeOffsets(int machine, float seat[3], float* forward, float* up);
+// The followed machine's body frame (its model origin RELATIVE TO THE COCKPIT EYE passed to
+// BuildActiveEyeProjView, world units, and its model +x, up and forward axes) for this frame's
+// cockpit eyes, so the cabin dash can carry the energy and speed HUD crops. Relative, because a
+// world position of thousands of units holds only ~1e-3 units in a float.
 void SetCockpitBody(const float pos[3], const float side[3], const float up[3], const float fwd[3], int machine);
 
 // World-space frame of the active eye as last built by BuildActiveEyeProjView (position, forward,

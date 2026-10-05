@@ -37,6 +37,7 @@
 #include "gdx_camera_pose.h"
 #ifdef GDX_OPENXR
 #include "vr/gdx_openxr.h"
+#include "vr/gdx_vr_math.h"
 #endif
 extern "C" {
 #include "mio0.h"
@@ -2947,9 +2948,11 @@ extern "C" void gdx_vr_background_vtx_save(void);
 extern "C" void gdx_vr_background_vtx_restore(void);
 extern "C" void gdx_vr_background_vtx_build_eye(const float eyePos[3], const float forward[3], const float up[3],
                                                 float tanHalfX, float tanHalfY);
-// port/decomp_port.c: the followed racer's rendered position and travel basis, for the cockpit view.
-// Returns its stock model index (gdx_vr::CockpitRoofHeight), or -1.
-extern "C" int gdx_vr_read_player_vehicle(float pos[3], float forward[3], float up[3], float modelUp[3]);
+// port/decomp_port.c: the followed racer's rendered position and travel basis, for the cockpit view,
+// and its racer id (its model matrix's slot). Returns its stock model index
+// (gdx_vr::CockpitRoofHeight), or -1.
+extern "C" int gdx_vr_read_player_vehicle(float pos[3], float forward[3], float up[3], float modelUp[3],
+                                          int* racerId);
 // Player vehicle pose for this tick and the previous one (pos, travel forward, travel up, body up),
 // rolled with the camera poses so the cockpit anchor interpolates at the same t as the rendered machine.
 static float gGdxVrVehCur[12];
@@ -2957,6 +2960,14 @@ static float gGdxVrVehPrev[12];
 static bool gGdxVrVehCurOk = false;
 static bool gGdxVrVehPrevOk = false;
 static int gGdxVrVehMachine = -1; // this tick's model, not interpolated (it changes only between races)
+static int gGdxVrVehRacer = -1;   // its racer id: the slot of its model matrix in the pool
+// Camera-relative eye projection (Interpreter::SetVrEyeProjection) for the eye being replayed: the
+// slot the refill rebuilt, its projection*view relative to `origin` and that origin (the eye's
+// anchor, world units, in double). Valid only when this eye's rebuild succeeded.
+static bool gGdxVrEyeProjValid = false;
+static const void* gGdxVrEyeProjAddr = nullptr;
+static float gGdxVrEyeProjRel[4][4];
+static double gGdxVrEyeProjOrigin[3];
 // Fog remap for the eye being replayed (Interpreter::SetVrFogRemap): identity unless the eye's
 // projection uses a different near plane from the game camera (the cockpit view).
 static float gGdxVrEyeFogScale = 1.0f;
@@ -3368,8 +3379,8 @@ class N64DisplayListAdapter {
         if (GdxVrStereoTick()) {
             std::memcpy(gGdxVrVehPrev, gGdxVrVehCur, sizeof(gGdxVrVehCur));
             gGdxVrVehPrevOk = gGdxVrVehCurOk;
-            gGdxVrVehMachine =
-                gdx_vr_read_player_vehicle(&gGdxVrVehCur[0], &gGdxVrVehCur[3], &gGdxVrVehCur[6], &gGdxVrVehCur[9]);
+            gGdxVrVehMachine = gdx_vr_read_player_vehicle(&gGdxVrVehCur[0], &gGdxVrVehCur[3], &gGdxVrVehCur[6],
+                                                          &gGdxVrVehCur[9], &gGdxVrVehRacer);
             gGdxVrVehCurOk = true;
         } else {
             gGdxVrVehCurOk = gGdxVrVehPrevOk = false;
@@ -3461,67 +3472,156 @@ class N64DisplayListAdapter {
             GdxCameraPoseLerp(gGdxCamPosePrev[0], gGdxCamPoseCur[0], t, &pose);
         }
         float pv[4][4];
+        double origin[3];
         if (gdx_vr::CockpitMode() && gGdxVrVehCurOk) {
+            // The machine's model matrix exactly as this replay draws it (the cabin is drawn with
+            // it), and whether it interpolates this tick: the anchor must not tween while the
+            // machine it rides on snaps.
+            float bodyM[4][4];
+            bool bodyLerped = false;
+            const bool bodyOk =
+                gGdxVrVehRacer >= 0 && GdxPlayerBodyMtx(static_cast<uint32_t>(gGdxVrVehRacer), t, bodyM, &bodyLerped);
             // Cockpit: anchor on the machine itself, interpolated at the same t as its model matrix.
             float v[12];
             std::memcpy(v, gGdxVrVehCur, sizeof(v));
-            if (gGdxVrVehPrevOk && !recSnap && recPrev != 0 && !mForceCutSnap && t < 1.0f) {
+            if (gGdxVrVehPrevOk && !recSnap && recPrev != 0 && !mForceCutSnap && t < 1.0f && (!bodyOk || bodyLerped)) {
                 for (int i = 0; i < 12; ++i) {
                     v[i] = gGdxVrVehPrev[i] + (gGdxVrVehCur[i] - gGdxVrVehPrev[i]) * t;
                 }
             }
-            float roofForward = 0.0f, roofUp = 0.0f, side = 0.0f, tilt = 0.0f;
-            gdx_vr::CockpitOffsets(gGdxVrVehMachine, &roofForward, &roofUp, &side, &tilt);
-            // Up blends from the travel frame to the body's (its lean and tilt) by CockpitTilt. The
-            // heading stays the travel forward, flattened against that up, so a spin attack never
-            // turns the view.
-            float up[3] = { v[6] + (v[9] - v[6]) * tilt, v[7] + (v[10] - v[7]) * tilt, v[8] + (v[11] - v[8]) * tilt };
-            const float ulen = std::sqrt(up[0] * up[0] + up[1] * up[1] + up[2] * up[2]);
-            if (ulen < 1e-4f) {
-                return false;
-            }
-            for (float& c : up) {
-                c /= ulen;
-            }
-            const float along = v[3] * up[0] + v[4] * up[1] + v[5] * up[2];
-            float fwd[3] = { v[3] - along * up[0], v[4] - along * up[1], v[5] - along * up[2] };
-            const float flen = std::sqrt(fwd[0] * fwd[0] + fwd[1] * fwd[1] + fwd[2] * fwd[2]);
-            if (flen < 1e-4f) {
-                return false;
-            }
-            for (float& c : fwd) {
-                c /= flen;
-            }
-            // The eye rides on this machine's roof: RoofForward along its forward, then the roof
-            // height there (measured per stock model) plus RoofClearance up.
-            // Model +x maps to up x forward (racer.c builds modelBasis.z = y cross x).
-            const float sideAxis[3] = { up[1] * fwd[2] - up[2] * fwd[1], up[2] * fwd[0] - up[0] * fwd[2],
-                                        up[0] * fwd[1] - up[1] * fwd[0] };
-            const float eye[3] = { v[0] + fwd[0] * roofForward + up[0] * roofUp + sideAxis[0] * side,
-                                   v[1] + fwd[1] * roofForward + up[1] * roofUp + sideAxis[1] * side,
-                                   v[2] + fwd[2] * roofForward + up[2] * roofUp + sideAxis[2] * side };
-            const float at[3] = { eye[0] + fwd[0], eye[1] + fwd[1], eye[2] + fwd[2] };
-            {
-                // The body frame the cabin is drawn in (model up, travel forward flattened against it),
-                // for the dash HUD.
-                float bu[3] = { v[9], v[10], v[11] };
-                const float bl = std::sqrt(bu[0] * bu[0] + bu[1] * bu[1] + bu[2] * bu[2]);
-                if (bl > 1e-4f) {
-                    for (float& c : bu) {
-                        c /= bl;
+            double eyeD[3];
+            float fwd[3], up[3];
+            // The body frame the cabin is drawn in, for the dash HUD: model origin relative to the
+            // eye, and its model +x, up and forward axes.
+            float bodyRel[3], bs[3], bu[3], bf[3];
+            bool bodyFrameOk = false;
+            float seat[3], seatForward = 0.0f, seatUp = 0.0f;
+            if (gdx_vr::CabinEyeOffsets(gGdxVrVehMachine, seat, &seatForward, &seatUp)) {
+                // Inside the cabin the eye is the model matrix applied to the seat, the very matrix
+                // the cabin and hull are drawn with, and the view takes the body's frame whole
+                // (CockpitTilt is the roof view's): sitting in the machine, nothing of it may move
+                // against the viewer. Without this tick's matrix (not drawn), the same frame from the
+                // machine's pose: model up, travel forward flattened against it.
+                float m[4][4];
+                if (bodyOk) {
+                    std::memcpy(m, bodyM, sizeof(m));
+                } else {
+                    float u[3] = { v[9], v[10], v[11] };
+                    const float ul = std::sqrt(u[0] * u[0] + u[1] * u[1] + u[2] * u[2]);
+                    if (ul < 1e-4f) {
+                        return false;
                     }
-                    const float ba = v[3] * bu[0] + v[4] * bu[1] + v[5] * bu[2];
-                    float bf[3] = { v[3] - ba * bu[0], v[4] - ba * bu[1], v[5] - ba * bu[2] };
-                    const float bfl = std::sqrt(bf[0] * bf[0] + bf[1] * bf[1] + bf[2] * bf[2]);
-                    if (bfl > 1e-4f) {
-                        for (float& c : bf) {
-                            c /= bfl;
-                        }
-                        const float bs[3] = { bu[1] * bf[2] - bu[2] * bf[1], bu[2] * bf[0] - bu[0] * bf[2],
-                                              bu[0] * bf[1] - bu[1] * bf[0] };
-                        gdx_vr::SetCockpitBody(v, bs, bu, bf, gGdxVrVehMachine);
+                    for (float& c : u) {
+                        c /= ul;
+                    }
+                    const float a = v[3] * u[0] + v[4] * u[1] + v[5] * u[2];
+                    float f[3] = { v[3] - a * u[0], v[4] - a * u[1], v[5] - a * u[2] };
+                    const float fl = std::sqrt(f[0] * f[0] + f[1] * f[1] + f[2] * f[2]);
+                    if (fl < 1e-4f) {
+                        return false;
+                    }
+                    for (float& c : f) {
+                        c /= fl;
+                    }
+                    const float x[3] = { u[1] * f[2] - u[2] * f[1], u[2] * f[0] - u[0] * f[2], u[0] * f[1] - u[1] * f[0] };
+                    for (int j = 0; j < 3; ++j) {
+                        m[0][j] = x[j] * 0.1f;
+                        m[1][j] = u[j] * 0.1f;
+                        m[2][j] = f[j] * 0.1f;
+                        m[3][j] = v[j];
+                        m[j][3] = 0.0f;
+                    }
+                    m[3][3] = 1.0f;
+                }
+                float ax[3][3]; // model +x, up, forward
+                for (int r = 0; r < 3; ++r) {
+                    const float l = std::sqrt(m[r][0] * m[r][0] + m[r][1] * m[r][1] + m[r][2] * m[r][2]);
+                    if (l < 1e-6f) {
+                        return false;
+                    }
+                    for (int j = 0; j < 3; ++j) {
+                        ax[r][j] = m[r][j] / l;
                     }
                 }
+                gdx_vr::ModelPointExact(m, seat, eyeD);
+                for (int j = 0; j < 3; ++j) {
+                    eyeD[j] += static_cast<double>(ax[2][j]) * seatForward + static_cast<double>(ax[1][j]) * seatUp;
+                    fwd[j] = ax[2][j];
+                    up[j] = ax[1][j];
+                    bs[j] = ax[0][j];
+                    bu[j] = ax[1][j];
+                    bf[j] = ax[2][j];
+                    bodyRel[j] = static_cast<float>(static_cast<double>(m[3][j]) - eyeD[j]);
+                }
+                bodyFrameOk = true;
+            } else {
+                float roofForward = 0.0f, roofUp = 0.0f, side = 0.0f, tilt = 0.0f;
+                gdx_vr::CockpitOffsets(gGdxVrVehMachine, &roofForward, &roofUp, &side, &tilt);
+                // Up blends from the travel frame to the body's (its lean and tilt) by CockpitTilt. The
+                // heading stays the travel forward, flattened against that up, so a spin attack never
+                // turns the view.
+                up[0] = v[6] + (v[9] - v[6]) * tilt;
+                up[1] = v[7] + (v[10] - v[7]) * tilt;
+                up[2] = v[8] + (v[11] - v[8]) * tilt;
+                const float ulen = std::sqrt(up[0] * up[0] + up[1] * up[1] + up[2] * up[2]);
+                if (ulen < 1e-4f) {
+                    return false;
+                }
+                for (float& c : up) {
+                    c /= ulen;
+                }
+                const float along = v[3] * up[0] + v[4] * up[1] + v[5] * up[2];
+                fwd[0] = v[3] - along * up[0];
+                fwd[1] = v[4] - along * up[1];
+                fwd[2] = v[5] - along * up[2];
+                const float flen = std::sqrt(fwd[0] * fwd[0] + fwd[1] * fwd[1] + fwd[2] * fwd[2]);
+                if (flen < 1e-4f) {
+                    return false;
+                }
+                for (float& c : fwd) {
+                    c /= flen;
+                }
+                // The eye rides on this machine's roof: RoofForward along its forward, then the roof
+                // height there (measured per stock model) plus RoofClearance up.
+                // Model +x maps to up x forward (racer.c builds modelBasis.z = y cross x).
+                const float sideAxis[3] = { up[1] * fwd[2] - up[2] * fwd[1], up[2] * fwd[0] - up[0] * fwd[2],
+                                            up[0] * fwd[1] - up[1] * fwd[0] };
+                for (int j = 0; j < 3; ++j) {
+                    eyeD[j] = static_cast<double>(v[j] + fwd[j] * roofForward + up[j] * roofUp + sideAxis[j] * side);
+                }
+                // The body frame (model up, travel forward flattened against it).
+                float b[3] = { v[9], v[10], v[11] };
+                const float bl = std::sqrt(b[0] * b[0] + b[1] * b[1] + b[2] * b[2]);
+                if (bl > 1e-4f) {
+                    for (float& c : b) {
+                        c /= bl;
+                    }
+                    const float ba = v[3] * b[0] + v[4] * b[1] + v[5] * b[2];
+                    float f[3] = { v[3] - ba * b[0], v[4] - ba * b[1], v[5] - ba * b[2] };
+                    const float bfl = std::sqrt(f[0] * f[0] + f[1] * f[1] + f[2] * f[2]);
+                    if (bfl > 1e-4f) {
+                        for (int j = 0; j < 3; ++j) {
+                            bu[j] = b[j];
+                            bf[j] = f[j] / bfl;
+                            bodyRel[j] = static_cast<float>(static_cast<double>(v[j]) - eyeD[j]);
+                        }
+                        bs[0] = bu[1] * bf[2] - bu[2] * bf[1];
+                        bs[1] = bu[2] * bf[0] - bu[0] * bf[2];
+                        bs[2] = bu[0] * bf[1] - bu[1] * bf[0];
+                        bodyFrameOk = true;
+                    }
+                }
+            }
+            const float eye[3] = { static_cast<float>(eyeD[0]), static_cast<float>(eyeD[1]),
+                                   static_cast<float>(eyeD[2]) };
+            // Look far along the forward: a point one unit ahead rounds with the eye (~1e-3 units at
+            // 15000 from the course origin), which tilts the view by ~0.06 degrees from frame to frame.
+            const float at[3] = { eye[0] + fwd[0] * 4096.0f, eye[1] + fwd[1] * 4096.0f, eye[2] + fwd[2] * 4096.0f };
+            if (bodyFrameOk) {
+                gdx_vr::SetCockpitBody(bodyRel, bs, bu, bf, gGdxVrVehMachine);
+            }
+            for (int j = 0; j < 3; ++j) {
+                origin[j] = eyeD[j];
             }
             // The roof under the eye is a few tenths of a metre away, inside the game camera's near
             // plane (16 units), so the cockpit uses its own. The game's own near is not an option:
@@ -3565,8 +3665,20 @@ class N64DisplayListAdapter {
             if (!gdx_vr::BuildActiveEyeProjView(eye, at, up, pose.nearZ, pose.farZ, pv, true, 0.0f)) {
                 return false;
             }
+            for (int j = 0; j < 3; ++j) {
+                origin[j] = static_cast<double>(eye[j]);
+            }
         }
+        // The s15.16 matrix stays in the slot for anything that reads it back; the interpreter
+        // loads the eye-relative float one in its place (SetVrEyeProjection), see gGdxVrEyeProj*.
         gdx_interp::MtxFromF(pv, scratch);
+        if (gdx_vr::ActiveEyeRelativeProjView(gGdxVrEyeProjRel)) {
+            gGdxVrEyeProjAddr = scratch;
+            for (int j = 0; j < 3; ++j) {
+                gGdxVrEyeProjOrigin[j] = origin[j];
+            }
+            gGdxVrEyeProjValid = true;
+        }
         return true;
     }
 #endif
@@ -3813,25 +3925,54 @@ class N64DisplayListAdapter {
                 GdxCameraRebuildSlot(r.orig, r.prev, r.snap, r.scratch, t)) {
                 continue;
             }
-            if (mP1Enabled && r.prev != 0 && !r.snap && t < 1.0f &&
-                ReadableByteLimit(r.prev) >= 64u) {
-                gdx_interp::LerpMtx(reinterpret_cast<const void*>(r.prev),
-                                    reinterpret_cast<const void*>(r.orig), t, r.scratch);
-                // Restore rigidity to per-racer model matrices only. Applied to the racer arrays
-                // rather than every pool matrix because those are known to be scale-times-rotation
-                // (Matrix_ScaleFrom3DMatrix, racer.c:5985/5883); an arbitrary pool matrix carries no
-                // such guarantee and rescaling its rows would be a change, not a correction.
-                if (mRotFix && mCurPoolBase != 0) {
-                    const GdxRacerMtxId rid = GdxRacerMtxClassify(static_cast<uint32_t>(r.orig - mCurPoolBase));
-                    if (rid.field != GdxRacerMtxField::kNone) {
-                        GdxRenormalizeLerpedBasis(reinterpret_cast<const void*>(r.prev),
-                                                  reinterpret_cast<const void*>(r.orig), t, r.scratch);
-                    }
-                }
-            } else {
-                std::memcpy(r.scratch, reinterpret_cast<const void*>(r.orig), 64);
-            }
+            GdxP0FillSlot(r.orig, r.prev, r.snap, t, r.scratch);
         }
+    }
+
+    // One non-camera slot's matrix at t: lerp(prev, cur, t) for a live P1 slot, else the current
+    // pool matrix verbatim. Returns whether it lerped. Takes the record's fields: GdxP0Record is
+    // declared further down the class (see GdxCameraRebuildSlot).
+    bool GdxP0FillSlot(uintptr_t orig, uintptr_t prev, bool snap, float t, GdxP0Mtx* out) {
+        if (mP1Enabled && prev != 0 && !snap && t < 1.0f && ReadableByteLimit(prev) >= 64u) {
+            gdx_interp::LerpMtx(reinterpret_cast<const void*>(prev), reinterpret_cast<const void*>(orig), t, out);
+            // Restore rigidity to per-racer model matrices only. Applied to the racer arrays
+            // rather than every pool matrix because those are known to be scale-times-rotation
+            // (Matrix_ScaleFrom3DMatrix, racer.c:5985/5883); an arbitrary pool matrix carries no
+            // such guarantee and rescaling its rows would be a change, not a correction.
+            if (mRotFix && mCurPoolBase != 0) {
+                const GdxRacerMtxId rid = GdxRacerMtxClassify(static_cast<uint32_t>(orig - mCurPoolBase));
+                if (rid.field != GdxRacerMtxField::kNone) {
+                    GdxRenormalizeLerpedBasis(reinterpret_cast<const void*>(prev), reinterpret_cast<const void*>(orig),
+                                              t, out);
+                }
+            }
+            return true;
+        }
+        std::memcpy(out, reinterpret_cast<const void*>(orig), 64);
+        return false;
+    }
+
+    // A racer's body (machine model) matrix exactly as the replay at t loads it -- the same
+    // record, lerp-or-snap decision and renormalisation as its slot's refill -- in float, and
+    // whether it lerped. False when the racer's body matrix is not in this tick's list.
+    bool GdxPlayerBodyMtx(uint32_t racer, float t, float out[4][4], bool* lerped) {
+        if (mCurPoolBase == 0) {
+            return false;
+        }
+        for (const GdxP0Record& r : mP0Records) {
+            if (r.proj || ReadableByteLimit(r.orig) < 64u) {
+                continue;
+            }
+            const GdxRacerMtxId id = GdxRacerMtxClassify(static_cast<uint32_t>(r.orig - mCurPoolBase));
+            if (id.field != GdxRacerMtxField::kBody || id.racer != racer) {
+                continue;
+            }
+            GdxP0Mtx m;
+            *lerped = GdxP0FillSlot(r.orig, r.prev, r.snap, t, &m);
+            gdx_interp::MtxToF(&m, out);
+            return true;
+        }
+        return false;
     }
 
     // --- Carousel viewport interpolation ----------------------------------------------------------
@@ -9160,6 +9301,7 @@ extern "C" void gdx_gfx_run(void* dl, size_t dl_size, GdxTaskUcode taskUcode) {
             gGdxVrEyeFogScale = 1.0f; // the camera refill below sets a remap if this eye needs one
             gGdxVrEyeFogBias = 0.0f;
             gGdxVrEyeClipNotReject = false;
+            gGdxVrEyeProjValid = false; // set by the camera refill when it rebuilds this eye
             c->adapter->GdxP0RefillScratch(t);
             c->adapter->GdxVpRefillScratch(t);
             c->adapter->GdxVtxRefillScratch(t);
@@ -9181,10 +9323,20 @@ extern "C" void gdx_gfx_run(void* dl, size_t dl_size, GdxTaskUcode taskUcode) {
             c->interp->SetVrFogRemap(gGdxVrEyeFogScale, gGdxVrEyeFogBias);
             c->interp->SetVrClipNotReject(gGdxVrEyeClipNotReject);
             c->interp->SetVrCabinCut(gGdxVrEyeClipNotReject); // cockpit eyes; markers only in cabin ticks
+            c->interp->SetVrEyeProjection(gGdxVrEyeProjValid ? gGdxVrEyeProjAddr : nullptr, gGdxVrEyeProjRel,
+                                          gGdxVrEyeProjOrigin);
             gdx_perf_sub_begin(GDX_PERF_SUB_IRUN);
             c->interp->StartFrame();
             c->interp->Run(reinterpret_cast<Gfx*>(c->commands), {});
             gdx_perf_sub_end(GDX_PERF_SUB_IRUN);
+            if (gGdxVrEyeProjValid && c->interp->VrEyeProjectionLoads() == 0) {
+                // The list never loaded the rebuilt slot, so this eye drew from the s15.16 matrix.
+                static bool sWarned = false;
+                if (!sWarned) {
+                    sWarned = true;
+                    gdx_port_logf("[vr] eye projection: rebuilt slot not loaded by the list; s15.16 fallback\n");
+                }
+            }
             // GDX_VR_DIAG_GEOM=<n>: log the first n eye renders' far-plane and clip counts.
             {
                 static const long sDiagGeom = [] {
@@ -9212,6 +9364,7 @@ extern "C" void gdx_gfx_run(void* dl, size_t dl_size, GdxTaskUcode taskUcode) {
             }
             c->interp->SetVrEyeTarget(static_cast<uint32_t>(width), static_cast<uint32_t>(height));
             c->interp->SetVrPass(Fast::Interpreter::VrPass::HudOnly);
+            c->interp->SetVrEyeProjection(nullptr, nullptr, nullptr);
             c->interp->SetVrFogRemap(1.0f, 0.0f);
             c->interp->SetVrClipNotReject(false);
             c->interp->SetVrCabinCut(false);

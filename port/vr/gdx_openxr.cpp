@@ -171,6 +171,7 @@ struct ActiveEye {
     Pose pose{};
     Fov fov{};
     bool worldValid = false; // set when BuildActiveEyeProjView anchors this eye
+    float projRel[4][4]{};   // its projection*view relative to the anchor origin (EyeProjViewRelative)
     Vec3 worldPos{};
     Vec3 worldForward{};
     Vec3 worldUp{};
@@ -247,8 +248,9 @@ struct State {
     Swapchain mirror; // cabin rear-view mirror image
     Swapchain labels; // cabin dash labels ("CHECK ENGINE", "BOOST READY"), drawn once at session start
     long long mirrorRenderedTick = -1;
-    // Cabin dash HUD: the followed machine's body frame and the cockpit eye anchor of the frame being
-    // built (both world units), set while the cockpit eyes are rebuilt, read when the layers go out.
+    // Cabin dash HUD: the followed machine's body frame (its pos relative to the cockpit anchor's
+    // origin) and the cockpit eye anchor of the frame being built (world units), set while the
+    // cockpit eyes are rebuilt, read when the layers go out.
     struct CockpitBody {
         bool valid = false;
         int machine = -1;
@@ -2073,10 +2075,13 @@ void PlaceOnBody(XrCompositionLayerQuad* q, const float c[3], const float x[3], 
     const Vec3 Y = toWorld(y);
     const Vec3 Z = { X.y * Y.z - X.z * Y.y, X.z * Y.x - X.x * Y.z, X.x * Y.y - X.y * Y.x };
     const Vec3 o = toWorld(c);
-    const Vec3 world = { b.pos.x + 0.1f * o.x, b.pos.y + 0.1f * o.y, b.pos.z + 0.1f * o.z };
+    // Relative to the anchor's origin throughout (b.pos is), so no float ever holds a world position.
+    const Vec3 rel = { b.pos.x + 0.1f * o.x, b.pos.y + 0.1f * o.y, b.pos.z + 0.1f * o.z };
     const Quat yaw = s.recenterValid ? s.recenterYaw : Quat{ 0.0f, 0.0f, 0.0f, 1.0f };
     const Vec3 origin = s.recenterValid ? Vec3{ s.recenterPos.x, s.heightAnchor, s.recenterPos.z } : Vec3{ 0, 0, 0 };
-    const Pose p = WorldToTracking(s.cockpitAnchor, s.cockpitUnitsPerMeter, yaw, origin, world, X, Y, Z);
+    Anchor local = s.cockpitAnchor;
+    local.origin = { 0.0f, 0.0f, 0.0f };
+    const Pose p = WorldToTracking(local, s.cockpitUnitsPerMeter, yaw, origin, rel, X, Y, Z);
     q->layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
     q->space = s.localSpace;
     q->eyeVisibility = XR_EYE_VISIBILITY_BOTH;
@@ -2183,12 +2188,14 @@ bool AddCabinHudLayers(XrCompositionLayerQuad* parts, const XrCompositionLayerBa
                          b.up.z * std::cos(e) + b.fwd.z * std::sin(e) };
         const Vec3 Z = { b.up.x * std::sin(e) - b.fwd.x * std::cos(e), b.up.y * std::sin(e) - b.fwd.y * std::cos(e),
                          b.up.z * std::sin(e) - b.fwd.z * std::cos(e) };
-        const Vec3 world = { b.pos.x + 0.1f * (b.side.x * mx + b.up.x * mUp + b.fwd.x * mFwd),
-                             b.pos.y + 0.1f * (b.side.y * mx + b.up.y * mUp + b.fwd.y * mFwd),
-                             b.pos.z + 0.1f * (b.side.z * mx + b.up.z * mUp + b.fwd.z * mFwd) };
+        const Vec3 rel = { b.pos.x + 0.1f * (b.side.x * mx + b.up.x * mUp + b.fwd.x * mFwd),
+                           b.pos.y + 0.1f * (b.side.y * mx + b.up.y * mUp + b.fwd.y * mFwd),
+                           b.pos.z + 0.1f * (b.side.z * mx + b.up.z * mUp + b.fwd.z * mFwd) };
         const Quat yaw = s.recenterValid ? s.recenterYaw : Quat{ 0.0f, 0.0f, 0.0f, 1.0f };
         const Vec3 origin = s.recenterValid ? Vec3{ s.recenterPos.x, s.heightAnchor, s.recenterPos.z } : Vec3{ 0, 0, 0 };
-        const Pose p = WorldToTracking(s.cockpitAnchor, s.cockpitUnitsPerMeter, yaw, origin, world, X, Y, Z);
+        Anchor local = s.cockpitAnchor; // b.pos is relative to its origin
+        local.origin = { 0.0f, 0.0f, 0.0f };
+        const Pose p = WorldToTracking(local, s.cockpitUnitsPerMeter, yaw, origin, rel, X, Y, Z);
         XrCompositionLayerQuad& q = parts[kDashPanelCount + 1];
         q.layerFlags = 0;
         q.space = s.localSpace;
@@ -2879,6 +2886,15 @@ void SetCockpitBody(const float pos[3], const float side[3], const float up[3], 
     b.valid = true;
 }
 
+bool CabinEyeOffsets(int machine, float seat[3], float* forward, float* up) {
+    if (SettingInt(kSetCockpitStyle) != 1 || gdx_vr_cabin_seat(machine, seat) == 0) {
+        return false;
+    }
+    *forward = SettingFloat(kSetCabinSeatForward);
+    *up = SettingFloat(kSetCabinSeatUp);
+    return true;
+}
+
 void CockpitOffsets(int machine, float* forward, float* up, float* side, float* tilt) {
     *tilt = SettingFloat(kSetCockpitTilt);
     *side = 0.0f;
@@ -2945,6 +2961,7 @@ bool BuildActiveEyeProjView(const float eye[3], const float at[3], const float u
         s.cockpitAnchorValid = true;
     }
     EyeProjView(anchor, s.activeEye.pose, s.activeEye.fov, unitsPerMeter, nearZ, farZ, out);
+    EyeProjViewRelative(anchor, s.activeEye.pose, s.activeEye.fov, unitsPerMeter, nearZ, farZ, s.activeEye.projRel);
     const Vec3 offset = AnchorToWorld(anchor, s.activeEye.pose.position);
     s.activeEye.worldPos = { anchor.origin.x + offset.x * unitsPerMeter, anchor.origin.y + offset.y * unitsPerMeter,
                              anchor.origin.z + offset.z * unitsPerMeter };
@@ -2960,6 +2977,15 @@ float ActiveEyeTanHalfY() {
         return 0.0f;
     }
     return 0.5f * (std::tan(e.fov.angleUp) - std::tan(e.fov.angleDown));
+}
+
+bool ActiveEyeRelativeProjView(float out[4][4]) {
+    const ActiveEye& e = S().activeEye;
+    if (!e.active || !e.worldValid) {
+        return false;
+    }
+    std::memcpy(out, e.projRel, sizeof(e.projRel));
+    return true;
 }
 
 bool ActiveEyeWorldFrame(float pos[3], float forward[3], float up[3], float* tanHalfX, float* tanHalfY) {

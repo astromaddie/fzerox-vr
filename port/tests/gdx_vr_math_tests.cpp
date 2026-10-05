@@ -383,6 +383,124 @@ static void CaseWorldToTracking() {
     checkNear("QuatFromBasis maps x to its first column", r.z, -1.0, 1e-5);
 }
 
+// Cabin cockpit precision. The machine's model matrix (s15.16 in the pool, as the game builds it),
+// the eye derived from that matrix at the seat, and the eye's origin-relative projection, combined
+// as the interpreter does with the camera-relative eye projection on (Interpreter::ComputeMP: the
+// model matrix translated by -origin in double, then MP = model * pv and v * MP in float). Cabin
+// points must land within 0.01 degrees of a double-precision reference anywhere within +-15000
+// units of the course origin. The old path -- the absolute projection*view cut to s15.16 -- is run
+// alongside to show the case can tell the two apart.
+static float Fix1616(float x) {
+    return (float)(std::trunc((double)x * 65536.0) / 65536.0); // guMtxF2L, then guMtxL2F
+}
+
+static double AngleErrorDeg(const float clip[4], double refX, double refY, const float proj[4][4]) {
+    const double dx = clip[0] / clip[3] - refX;
+    const double dy = clip[1] / clip[3] - refY;
+    // Tangent-plane distance bounds the angle from above.
+    return (std::fabs(dx) / proj[0][0] + std::fabs(dy) / proj[1][1]) * 180.0 / 3.14159265358979;
+}
+
+static void CaseCabinPrecision() {
+    unsigned seed = 12345u;
+    const auto rnd = [&seed](float lo, float hi) {
+        seed = seed * 1664525u + 1013904223u;
+        return lo + (hi - lo) * (float)((seed >> 8) & 0xFFFFFF) / (float)0xFFFFFF;
+    };
+    const float seat[3] = { 0.0f, 104.0f, 51.0f }; // Blue Falcon's measured seat, model units
+    // Dash centre, a sill and the two mirror-end lamps of the same cabin, model units.
+    const float pts[4][3] = { { 0, 85, 96 }, { 45, 95, 80 }, { 25, 110, 131 }, { -25, 110, 131 } };
+    const Fov fov = { -0.95f, 0.85f, 0.9f, -0.95f };
+    Pose head = kIdentityPose;
+    head.position = { 0.032f, 0.05f, -0.02f };
+    const float nearZ = 2.0f, farZ = 32768.0f;
+    float proj[4][4];
+    FovProjectionMatrix(fov, nearZ, farZ, proj);
+    double worstNew = 0.0, worstOld = 0.0;
+    for (int trial = 0; trial < 4000; trial++) {
+        const float pos[3] = { rnd(-15000, 15000), rnd(-15000, 15000), rnd(-15000, 15000) };
+        const auto unit = [](Vec3 v, bool* ok) {
+            const float l = std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+            *ok = l > 0.1f;
+            return *ok ? Vec3{ v.x / l, v.y / l, v.z / l } : v;
+        };
+        bool ok = false;
+        const Vec3 up = unit({ rnd(-1, 1), rnd(-1, 1), rnd(-1, 1) }, &ok);
+        if (!ok) {
+            continue;
+        }
+        Vec3 f = { rnd(-1, 1), rnd(-1, 1), rnd(-1, 1) };
+        const float along = f.x * up.x + f.y * up.y + f.z * up.z;
+        const Vec3 fwd = unit({ f.x - along * up.x, f.y - along * up.y, f.z - along * up.z }, &ok);
+        if (!ok) {
+            continue;
+        }
+        const Vec3 side = { up.y * fwd.z - up.z * fwd.y, up.z * fwd.x - up.x * fwd.z, up.x * fwd.y - up.y * fwd.x };
+        // The pool's model matrix: rows 0.1 * (model +x, up, forward), translation the position.
+        float m[4][4] = { { side.x * 0.1f, side.y * 0.1f, side.z * 0.1f, 0 },
+                          { up.x * 0.1f, up.y * 0.1f, up.z * 0.1f, 0 },
+                          { fwd.x * 0.1f, fwd.y * 0.1f, fwd.z * 0.1f, 0 },
+                          { pos[0], pos[1], pos[2], 1 } };
+        for (int i = 0; i < 4; i++) {
+            for (int j = 0; j < 4; j++) {
+                m[i][j] = Fix1616(m[i][j]);
+            }
+        }
+        // The cabin eye: that matrix at the seat, in double; the view looks far along the forward.
+        double eyeD[3];
+        ModelPointExact(m, seat, eyeD);
+        const Vec3 eye = { (float)eyeD[0], (float)eyeD[1], (float)eyeD[2] };
+        Anchor a;
+        if (!AnchorFromLookAt(eye, { eye.x + fwd.x * 4096.0f, eye.y + fwd.y * 4096.0f, eye.z + fwd.z * 4096.0f }, up,
+                              &a)) {
+            continue;
+        }
+        float rel[4][4], abs[4][4];
+        EyeProjViewRelative(a, head, fov, 1.0f, nearZ, farZ, rel);
+        EyeProjView(a, head, fov, 1.0f, nearZ, farZ, abs);
+        for (int i = 0; i < 4; i++) {
+            for (int j = 0; j < 4; j++) {
+                abs[i][j] = Fix1616(abs[i][j]);
+            }
+        }
+        // Interpreter, camera-relative: the model matrix less the origin in double, then float.
+        float mRel[4][4];
+        for (int i = 0; i < 4; i++) {
+            for (int j = 0; j < 3; j++) {
+                mRel[i][j] = (float)((double)m[i][j] - (double)m[i][3] * eyeD[j]);
+            }
+            mRel[i][3] = m[i][3];
+        }
+        float mpNew[4][4], mpOld[4][4];
+        MatMul(mRel, rel, mpNew);
+        MatMul(m, abs, mpOld);
+        // Reference, in double: the eye's world position and axes, the point, the same frustum.
+        const Vec3 off = AnchorToWorld(a, head.position);
+        const double ex = eyeD[0] + off.x, ey = eyeD[1] + off.y, ez = eyeD[2] + off.z;
+        for (const auto& c : pts) {
+            double w[3];
+            ModelPointExact(m, c, w);
+            const double d[3] = { w[0] - ex, w[1] - ey, w[2] - ez };
+            const double vx = d[0] * a.right.x + d[1] * a.right.y + d[2] * a.right.z;
+            const double vy = d[0] * a.up.x + d[1] * a.up.y + d[2] * a.up.z;
+            const double vz = d[0] * a.back.x + d[1] * a.back.y + d[2] * a.back.z;
+            const double refX = (vx * proj[0][0] + vz * proj[2][0]) / -vz;
+            const double refY = (vy * proj[1][1] + vz * proj[2][1]) / -vz;
+            float cn[4], co[4];
+            for (int j = 0; j < 4; j++) {
+                cn[j] = c[0] * mpNew[0][j] + c[1] * mpNew[1][j] + c[2] * mpNew[2][j] + mpNew[3][j];
+                co[j] = c[0] * mpOld[0][j] + c[1] * mpOld[1][j] + c[2] * mpOld[2][j] + mpOld[3][j];
+            }
+            worstNew = std::fmax(worstNew, AngleErrorDeg(cn, refX, refY, proj));
+            worstOld = std::fmax(worstOld, AngleErrorDeg(co, refX, refY, proj));
+        }
+    }
+    std::printf("    cabin points, world +-15000: worst %.5f deg camera-relative, %.3f deg s15.16\n", worstNew,
+                worstOld);
+    check("cabin: camera-relative eye projection within 0.01 degrees", worstNew < 0.01);
+    check("cabin: the s15.16 projection*view really was off by more", worstOld > 0.1);
+}
+
 int main() {
     std::printf("gdx_vr_math_tests\n");
     CaseMatchesGameCamera("straight ahead", { 0, 0, 0 }, { 0, 0, -100 }, { 0, 1, 0 }, 70.0f, 0.0f, 0.0f);
@@ -401,6 +519,7 @@ int main() {
     CasePointer();
     CaseNoRoll();
     CaseWorldToTracking();
+    CaseCabinPrecision();
     std::printf("%d checks, %d failed\n", gChecks, gFails);
     return gFails == 0 ? 0 : 1;
 }

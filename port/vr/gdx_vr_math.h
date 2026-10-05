@@ -71,6 +71,18 @@ float FitToFixedPoint(float m[4][4], float limit);
 float EyeProjView(const Anchor& anchor, const Pose& eye, const Fov& fov, float unitsPerMeter, float nearZ, float farZ,
                   float out[4][4]);
 
+// The same eye's projection*view for positions RELATIVE TO THE ANCHOR ORIGIN: no world translation,
+// so nothing in it is large and it is used in float, never fitted or cut to fixed point. The
+// interpreter pairs it with the origin (Interpreter::SetVrEyeProjection), subtracting the origin
+// from each model matrix in double; an s15.16 world-space projection*view rounds to ~0.1 units at
+// a few thousand units from the course origin, degrees of jitter on a cockpit a few units away.
+void EyeProjViewRelative(const Anchor& anchor, const Pose& eye, const Fov& fov, float unitsPerMeter, float nearZ,
+                         float farZ, float out[4][4]);
+
+// A model-space point through a row-vector model matrix (p * m), in double: m's translation is a
+// world position whose float sum with a small offset would round to ~1e-3 units at 15000.
+void ModelPointExact(const float m[4][4], const float p[3], double out[3]);
+
 // Rotate v by unit quaternion q.
 Vec3 Rotate(const Quat& q, const Vec3& v);
 

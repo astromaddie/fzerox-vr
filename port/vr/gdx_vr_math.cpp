@@ -262,4 +262,21 @@ float EyeProjView(const Anchor& anchor, const Pose& eye, const Fov& fov, float u
     return FitToFixedPoint(out, 30000.0f);
 }
 
+void EyeProjViewRelative(const Anchor& anchor, const Pose& eye, const Fov& fov, float unitsPerMeter, float nearZ,
+                         float farZ, float out[4][4]) {
+    Anchor local = anchor;
+    local.origin = { 0.0f, 0.0f, 0.0f };
+    float view[4][4];
+    float proj[4][4];
+    EyeViewMatrix(local, eye, unitsPerMeter, view);
+    FovProjectionMatrix(fov, nearZ, farZ, proj);
+    MatMul(view, proj, out);
+}
+
+void ModelPointExact(const float m[4][4], const float p[3], double out[3]) {
+    for (int j = 0; j < 3; j++) {
+        out[j] = (double)m[3][j] + (double)p[0] * m[0][j] + (double)p[1] * m[1][j] + (double)p[2] * m[2][j];
+    }
+}
+
 } // namespace gdx_vr

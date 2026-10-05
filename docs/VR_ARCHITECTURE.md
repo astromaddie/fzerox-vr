@@ -266,7 +266,7 @@ release user, independent of VR, and is worth upstreaming on its own.
 | `port/vr/gdx_vr_scheduler.*` | Display-time scheduler: places each XR frame on the 59.94 Hz tick timeline by `predictedDisplayTime`, says how many ticks must run first and at which interpolation t to render. Pure; `gdx_vr_scheduler_tests` (45 checks, incl. 72/90/120/144/45 Hz uniform steps and an hour without drift). |
 | `port/vr/gdx_vr_system.*` | Pure policy, no OpenXR: an adapter over sfvr's View-button state machine, recentre-request merging (Level vs Height), the Menu + View chord, stick-as-D-pad for menu navigation, refresh-rate picking, and the `gEnhancements.VR.*` settings table (names, defaults, clamp ranges). `gdx_vr_system_tests` (67 checks, including the cockpit roof lookup). |
 | `port/third_party/sfvr/` | The shared cross-port VR library (C99), vendored by copying from `~/code/sfvr`; `VERSION` holds the pinned commit. Never edited here. Built as `gdx_sfvr`. Used for the View button, the haptic queue and the `[vr-perf]` line. |
-| `port/vr/gdx_vr_math.*` | Per-eye projection·view in the game's conventions; asymmetric XR FOV; s15.16 fit (uniform scale, NDC-invariant). `gdx_vr_math_tests` (34 checks) compares against a transcription of `Matrix_SetLookAt`/`Matrix_SetFrustrum`/`Camera_CalculateProjectionViewMtx`. |
+| `port/vr/gdx_vr_math.*` | Per-eye projection·view in the game's conventions; asymmetric XR FOV; s15.16 fit (uniform scale, NDC-invariant). `gdx_vr_math_tests` (74 checks) compares against a transcription of `Matrix_SetLookAt`/`Matrix_SetFrustrum`/`Camera_CalculateProjectionViewMtx`, and checks cabin-point precision of the camera-relative eye projection. |
 | `port/vr/gdx_openxr.*` | Instance/session/swapchains (GL, Xlib/GLX binding), session states, the shared frame protocol, flat quad, stereo projection layer, head-locked HUD quad, OpenXR controller actions, diagnostics. |
 | `port/vr/gdx_vr_settings.*` | Loads, repairs and saves the `gEnhancements.VR.*` CVars at session start (missing keys get defaults, wrong-typed values are converted, strings are reset). `gdx_vr_settings_tests` runs it against libultraship's real config code, then checks the SIGTERM exit path. |
 | `libultraship` `Interpreter` | `gfx_pre_present_hook`; `SetVrEyeTarget` (offscreen eye-sized target, no MSAA/post shader/hor+ squash, overscan border scissors removed); `VrPass` world/HUD split at the HUD marker; texture rectangles dropped from world passes. |
@@ -453,6 +453,29 @@ edits all of these except `Stereo` and `WideCull`.
     (`gdx_register_host_wide_command_range`): in the executable's static data the bridge read the
     vertices as N64 data (scrambled axes), and unregistered RDRAM lists as 8-byte commands (nothing
     drawn). `CabinSeatUp` / `CabinSeatForward` (+-10 world units) adjust the seat.
+  - **Cabin steadiness** (2026-10-05, after "the boost-ready indicator jitters, and so does the whole
+    ship" and "the CHECK lights drift up and down against the mirror"; build- and test-verified,
+    not yet worn):
+    - Camera-relative eye projection. The eye's projection*view used to reach the interpreter as an
+      s15.16 matrix with the world translation in it; rounding at thousands of units from the course
+      origin moved everything by up to ~0.1 units per frame, degrees of jitter on a cabin a few units
+      away, while the compositor placed the quads exactly. Each VR eye (chase, cockpit and the
+      mirror replay) now hands `Interpreter::SetVrEyeProjection` a float projection*view relative to
+      the eye anchor and the anchor itself in double; while that projection is loaded every MP is
+      formed from the modelview translated by -anchor in double (`Interpreter::ComputeMP`). The
+      s15.16 matrix still goes in the slot (and `MtxFromF` now rounds rather than truncates). The
+      dash and mirror quads are placed relative to the anchor too (`SetCockpitBody` takes the body
+      origin relative to the eye). `gdx_vr_math_tests` `CaseCabinPrecision`: cabin points within
+      ±15000 units land within 0.01 degrees of a double reference (the old path: degrees). A log
+      line `[vr] eye projection: rebuilt slot not loaded by the list` means the override missed.
+    - The cabin eye is the machine's model matrix applied to the seat, taken from the replay's own
+      interpolated body matrix (`GdxPlayerBodyMtx`), and the view takes the body's whole frame, so
+      `CockpitTilt` applies to the roof seat only. A spin attack now turns the cabin view with the
+      machine. The anchor no longer tweens on a tick where that matrix snaps (also for the roof).
+    - The cabin racer is placed without its ride shake (the speed vibration along the body's up,
+      ±0.3 units at 1000 km/h, five times on dirt, and the spin-out jitter): its model matrix, attack
+      highlight, booster flames and the eye all use `gdx_vr_racer_model_pos`. Chase and roof views
+      keep the shake.
   - **Dash** (cabin only), aiming at a real dashboard:
     - HUD crops (`imageRect`) of the race HUD swapchain as quad layers, posed from the machine's body
       frame through the cockpit eye anchor into LOCAL (`WorldToTracking`; `kDashPanels`), all on the

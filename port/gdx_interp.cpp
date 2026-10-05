@@ -124,7 +124,8 @@ const P1Config& P1() {
 }
 
 // =============================================================================================
-// N64 Mtx <-> float. Bit-for-bit libultra guMtxL2F / guMtxF2L on 16 host int32 words.
+// N64 Mtx <-> float. libultra guMtxL2F bit for bit, and guMtxF2L except that MtxFromF rounds
+// to nearest, on 16 host int32 words.
 //   words[0..7]  = integer half (s15.16 high words), words[8..15] = fraction half (low words).
 // Pool matrices are host-built (decomp guMtxF2L output, host byte order), so reading the 64 bytes
 // as native int32 matches the decomp's own native reads exactly.
@@ -157,8 +158,11 @@ void MtxFromF(const float mf[4][4], void* mtx) {
     for (int i = 0; i < 4; i++) {
         for (int j = 0; j < 2; j++) {
             const int idx = i * 2 + j;
-            const int32_t e1 = static_cast<int32_t>(mf[i][j * 2] * kFToFix32);
-            const int32_t e2 = static_cast<int32_t>(mf[i][j * 2 + 1] * kFToFix32);
+            // Round to nearest (guMtxF2L truncates toward zero, a bias of up to one 1/65536 step).
+            // Values the pool already holds -- every float of magnitude 128 and up, and any matrix
+            // read back with MtxToF -- are exact either way, so verbatim round trips are unchanged.
+            const int32_t e1 = static_cast<int32_t>(std::lrintf(mf[i][j * 2] * kFToFix32));
+            const int32_t e2 = static_cast<int32_t>(std::lrintf(mf[i][j * 2 + 1] * kFToFix32));
             intw[idx]  = (static_cast<uint32_t>(e1) & 0xFFFF0000u) |
                          ((static_cast<uint32_t>(e2) >> 16) & 0xFFFFu);
             fracw[idx] = ((static_cast<uint32_t>(e1) << 16) & 0xFFFF0000u) |

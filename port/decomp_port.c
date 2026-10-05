@@ -1801,12 +1801,17 @@ static s32 gdx_vr_stock_model(const Racer* racer) {
     return -1;
 }
 
-int gdx_vr_read_player_vehicle(float pos[3], float forward[3], float up[3], float modelUp[3]) {
-    const Racer* racer = &gRacers[gCameras[0].id];
+static s32 gdx_vr_cabin_machine(const Racer* racer);
+const Vec3f* gdx_vr_racer_model_pos(const Racer* racer);
 
-    pos[0] = racer->modelPos.x;
-    pos[1] = racer->modelPos.y;
-    pos[2] = racer->modelPos.z;
+int gdx_vr_read_player_vehicle(float pos[3], float forward[3], float up[3], float modelUp[3], int* racerId) {
+    const Racer* racer = &gRacers[gCameras[0].id];
+    const Vec3f* modelPos = gdx_vr_racer_model_pos(racer); /* as Racer_Draw places its model */
+
+    *racerId = racer->id;
+    pos[0] = modelPos->x;
+    pos[1] = modelPos->y;
+    pos[2] = modelPos->z;
     forward[0] = racer->trueBasis.x.x;
     forward[1] = racer->trueBasis.x.y;
     forward[2] = racer->trueBasis.x.z;
@@ -2009,6 +2014,58 @@ static Gfx* gdx_cabin_lamps(Gfx* gfx, const Racer* racer) {
         gSPDisplayList(gfx++, &sGdxCabinLampGfx[i * GDX_CABIN_LAMP_GFX]);
     }
     return gfx;
+}
+
+/* The stock model whose cabin the followed racer is drawn with this tick (the cabin cockpit is on
+   and the model has cabin data), else -1. */
+static s32 gdx_vr_cabin_machine(const Racer* racer) {
+    s32 machine;
+
+    if (!gGdxVrCabinActive || !gGdxVrHudMarkerEnabled || racer != &gRacers[gCameras[0].id]) {
+        return -1;
+    }
+    machine = gdx_vr_stock_model(racer);
+    return (machine >= 0 && machine < GDX_CABIN_MACHINE_COUNT) ? machine : -1;
+}
+
+/* The ride shake Racer_Update adds to modelPos (racer.c: the speed vibration along the body's up,
+   ±0.3 units at 1000 km/h and five times that on dirt, and the spin-out jitter), per racer, with
+   the modelPos it was added to. A pilot sitting in the cabin rides the shake with the cabin, so
+   the cabin itself stays put, but the whole world then shakes by that much at up to 30 Hz; the
+   cabin racer is placed without it instead (the chase view keeps it). */
+static Vec3f sGdxRideShake[TOTAL_RACER_COUNT];
+static Vec3f sGdxRideShaken[TOTAL_RACER_COUNT];
+static u8 sGdxRideShakeValid[TOTAL_RACER_COUNT];
+
+void gdx_vr_note_ride_shake(const Racer* racer) {
+    const s32 id = racer->id;
+
+    if (id < 0 || id >= TOTAL_RACER_COUNT) {
+        return;
+    }
+    sGdxRideShake[id].x = racer->modelPos.x - racer->segmentPositionInfo.pos.x;
+    sGdxRideShake[id].y = racer->modelPos.y - racer->segmentPositionInfo.pos.y;
+    sGdxRideShake[id].z = racer->modelPos.z - racer->segmentPositionInfo.pos.z;
+    sGdxRideShaken[id] = racer->modelPos;
+    sGdxRideShakeValid[id] = 1;
+}
+
+/* Where Racer_Draw places a racer's model: modelPos, less the ride shake for the cabin racer. Its
+   model matrix carries this, and the cockpit eye is derived from that matrix. Anything that moved
+   modelPos after the shake was added (a reset, the podium lift) keeps modelPos as it is. */
+const Vec3f* gdx_vr_racer_model_pos(const Racer* racer) {
+    static Vec3f sSteady[TOTAL_RACER_COUNT];
+    const s32 id = racer->id;
+
+    if (id < 0 || id >= TOTAL_RACER_COUNT || !sGdxRideShakeValid[id] || gdx_vr_cabin_machine(racer) < 0 ||
+        racer->modelPos.x != sGdxRideShaken[id].x || racer->modelPos.y != sGdxRideShaken[id].y ||
+        racer->modelPos.z != sGdxRideShaken[id].z) {
+        return &racer->modelPos;
+    }
+    sSteady[id].x = racer->modelPos.x - sGdxRideShake[id].x;
+    sSteady[id].y = racer->modelPos.y - sGdxRideShake[id].y;
+    sSteady[id].z = racer->modelPos.z - sGdxRideShake[id].z;
+    return &sSteady[id];
 }
 
 /* Racer_Draw: before the machine's LOD list. Returns the stock model (and emits the cut-begin
