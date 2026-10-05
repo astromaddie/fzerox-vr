@@ -7,8 +7,8 @@ record what the stock renderer does and what was measured; section 4 describes w
 A minimal **in-headset VR settings page with Quit to Steam** exists (section 4, "In-headset menu"): the
 G-Diffuser menu's VR tab on the flat quad, opened by holding Menu + View for 0.5 s. It is not a full
 settings page (no tab set, no pointer, no gameplay or comfort-turn settings yet). The system layer, the
-menu, haptics, the refresh-rate request and the `[vr-perf]` line are implemented but, like everything
-else here, none of it has been tried by a person in the headset.
+menu, haptics, the refresh-rate request and fallback, the resolution scale and the `[vr-perf]` line are
+implemented but, like everything else here, none of it has been tried by a person in the headset.
 
 Target: optional OpenXR output mode (`GDX_OPENXR=ON` at build time, `--vr` / `GDX_VR=1` at launch)
 running natively on Steam Frame (Linux ARM64). Desktop behaviour with VR off must stay
@@ -155,7 +155,7 @@ SM8650 (Snapdragon 8 Gen 3, 8 cores), 15 GiB RAM, glibc 2.39 (release floor is 2
 | Implicit API layer | `XrApiLayer_VALVE_fdm_injection` (always loaded) |
 | `xrGetOpenGLGraphicsRequirementsKHR` | min 4.3, max 4.6 |
 | `xrCreateSession` (Xlib/GLX binding) | **success** |
-| View config | `PRIMARY_STEREO`; recommended **1728×1728** per eye, 1 sample; max 8192 |
+| View config | `PRIMARY_STEREO`; recommended **1728×1728** per eye, 1 sample; max 8192 (the port renders at 1728 x `ResolutionScale`, 2160² by default) |
 | Eye FOV (rad) | L eye: L −1.028 R 0.885 U 0.864 D −1.048; R eye mirrored; IPD 69.8 mm at test time |
 | Swapchain formats | `GL_SRGB8`, `GL_SRGB8_ALPHA8`, depth 16/24/32F — **no linear RGBA8** |
 | Reference spaces | VIEW, LOCAL, STAGE |
@@ -173,7 +173,7 @@ Consequences:
 - **Zink overhead** adds CPU cost per GL call; M0-D must measure on this stack.
 - The loader is available as SteamVR's `/opt/steamvr/bin/linuxarm64/libopenxr_loader.so` and a
   system static `libopenxr_loader.a`. We still ship a pinned Khronos loader in `lib/`.
-- 72 Hz is the default rate; `XR_FB_display_refresh_rate` can request others. 72 Hz/59.94 is a
+- 72 Hz is what the runtime starts at; `XR_FB_display_refresh_rate` can request others (the port now asks for 120, see "Display"). 72 Hz/59.94 is a
   non-integer ratio, so the display-time scheduler (M2) is needed from day one.
 
 Worn-headset run (2026-10-01 23:03): `IDLE → READY → SYNCHRONIZED → VISIBLE → FOCUSED` within
@@ -264,7 +264,7 @@ release user, independent of VR, and is worth upstreaming on its own.
 | File | Role |
 | --- | --- |
 | `port/vr/gdx_vr_scheduler.*` | Display-time scheduler: places each XR frame on the 59.94 Hz tick timeline by `predictedDisplayTime`, says how many ticks must run first and at which interpolation t to render. Pure; `gdx_vr_scheduler_tests` (45 checks, incl. 72/90/120/144/45 Hz uniform steps and an hour without drift). |
-| `port/vr/gdx_vr_system.*` | Pure policy, no OpenXR: an adapter over sfvr's View-button state machine, recentre-request merging (Level vs Height), the Menu + View chord, stick-as-D-pad for menu navigation, refresh-rate picking, and the `gEnhancements.VR.*` settings table (names, defaults, clamp ranges). `gdx_vr_system_tests` (67 checks, including the cockpit roof lookup). |
+| `port/vr/gdx_vr_system.*` | Pure policy, no OpenXR: an adapter over sfvr's View-button state machine, recentre-request merging (Level vs Height), the Menu + View chord, stick-as-D-pad for menu navigation, refresh-rate picking, the 120 -> 90 -> 72 fallback ladder (`RefreshWatch`), the eye image size calculation, the display-standard settings migration, and the `gEnhancements.VR.*` settings table (names, defaults, clamp ranges). `gdx_vr_system_tests` (132 checks, including the cockpit roof lookup, the ladder, the eye size and the migration). |
 | `port/third_party/sfvr/` | The shared cross-port VR library (C99), vendored by copying from `~/code/sfvr`; `VERSION` holds the pinned commit. Never edited here. Built as `gdx_sfvr`. Used for the View button, the haptic queue and the `[vr-perf]` line. |
 | `port/vr/gdx_vr_math.*` | Per-eye projection·view in the game's conventions; asymmetric XR FOV; s15.16 fit (uniform scale, NDC-invariant). `gdx_vr_math_tests` (74 checks) compares against a transcription of `Matrix_SetLookAt`/`Matrix_SetFrustrum`/`Camera_CalculateProjectionViewMtx`, and checks cabin-point precision of the camera-relative eye projection. |
 | `port/vr/gdx_openxr.*` | Instance/session/swapchains (GL, Xlib/GLX binding), session states, the shared frame protocol, flat quad, stereo projection layer, head-locked HUD quad, OpenXR controller actions, diagnostics. |
@@ -319,17 +319,17 @@ units per 60 Hz tick, i.e. 10 units = 1 m), `gEnhancements.VR.WideCull` (1),
 `gEnhancements.VR.HorizonLock` (0, default off: the viewer rolls with the chase camera; 1 removes that roll).
 
 Also registered: `gEnhancements.VR.Haptics` (0..1, 0.6: scale for every haptic pulse) and
-`gEnhancements.VR.RefreshRate` (60..144, 90: Hz ceiling for the refresh-rate request).
+`gEnhancements.VR.RefreshRate` (72..120, 120: Hz ceiling for the refresh-rate request), `gEnhancements.VR.ResolutionScale` (0.75..1.5, 1.25: eye image size as a multiple of the runtime's recommendation, read at VR start) and `gEnhancements.VR.DisplayStandard` (settings-migration version, currently 1; not shown in the menu).
 
-Persistence and ranges: the first VR launch registers all ten `gEnhancements.VR.*` keys with their
+Persistence and ranges: the first VR launch registers every `gEnhancements.VR.*` key with their
 defaults and saves the libultraship config (`CVarSave`), so they appear in the config file and persist
 from then on. On load, out-of-range or non-finite values are clamped and written back (and a value of
 the wrong CVar type, e.g. `"HudHeight": 2`, is converted); every read clamps again. The log prints a
 `[vr] settings:` line with the effective values. Ranges: `Stereo`, `WideCull`, `CameraMode` (default 1,
 cockpit), `HorizonLock`, `LevelPitch` 0..1; `HudAspect` 4/3..4 (default 1.5); `HudHeight` 0.3..3 m (1.2);
 `RoofForward` -12..12 world units (5.8); `RoofClearance` 0..20 world units (3.5); `CockpitTilt` 0..1 (0.5); `WorldScale` 1..50 (1; both views); `Haptics` 0..1 (0.6);
-`RefreshRate` 60..144 (90). Chase/cockpit toggles also save `CameraMode`. The VR tab of the menu (below)
-edits all of these except `Stereo` and `WideCull`.
+`RefreshRate` 72..120 (120); `ResolutionScale` 0.75..1.5 (1.25). Chase/cockpit toggles also save `CameraMode`. The VR tab of the menu (below)
+edits all of these except `Stereo`, `WideCull` and `DisplayStandard`.
 
 ### Verified unattended (eye dumps at 0°, 90° and 180° head yaw)
 - Correct stereo: near objects shift the right way between eyes; the asymmetric eye frustums offset
@@ -564,15 +564,48 @@ Recentre details:
 - Log lines: `[vr] recentre requested (<why>, <what>)` and `[openxr] recentred: ... height anchor
   <y> (updated|kept)`.
 
-### Display refresh rate
-When the runtime advertises `XR_FB_display_refresh_rate` the extension is enabled, the offered rates are
-enumerated and logged, and the highest offered rate at or below `gEnhancements.VR.RefreshRate` (default 90)
-is requested as the session starts running (and again whenever the CVar changes). **Automatic fallback to
-72 Hz:** while focused, if the XR frame rate stays under 90% of a target above 72 Hz for two consecutive
-10 s windows, 72 Hz is requested instead; windows restart on any focus change, and the fallback lasts for
-the session without touching the CVar. The simulation does not depend on the rate: the scheduler places
-frames by `predictedDisplayTime`, and its tests cover steady 72, 90, 120, 144 and 45 Hz and mid-stream
-switches between 90 and 72. Not yet verified on a device: that the Frame offers or honours these rates.
+### Display: 120 Hz at native resolution
+This follows the cross-port display standard (steam-frame-vr-port, standard.md section 9, decided
+2026-10-05): 120 Hz at about the panel's own 2160x2160 per eye, the way Half-Life (Lambda1VR) runs. **None
+of it has been measured on the device yet**: whether the Frame offers 120 to this app, whether the GPU
+holds 2160x2160 at 120 Hz through Zink, and whether the fallback ever fires are all still open.
+
+**Refresh rate.** When the runtime advertises `XR_FB_display_refresh_rate` the extension is enabled, the
+offered rates are enumerated and logged, and the highest offered rate at or below
+`gEnhancements.VR.RefreshRate` (72..120, default 120) is requested with `xrRequestDisplayRefreshRateFB` as
+the session starts running (and again whenever the CVar changes). The real rate is SteamVR's per-app
+preferred rate and only applies to Steam-title launches, so the Steam title's per-app rate has to be set
+to 120 once in SteamVR's settings in the headset; the request cannot raise it.
+
+**Fallback ladder, 120 -> 90 -> 72.** While focused, if the XR frame rate stays under 90% of the current
+rate for two consecutive 10 s windows, the next lower rate the runtime enumerates is requested (never
+below 72; if 90 is not offered, 120 goes straight to 72). The count starts over at each step, so every
+rung needs its own two bad windows. Windows restart on any focus change, so only worn time counts. The
+fallback lasts for the session and is never written back to `RefreshRate`. The decision is pure code,
+`gdx_vr::RefreshWatch` and `NextLowerRefreshRate` in `gdx_vr_system.*`, covered by `gdx_vr_system_tests`;
+`gdx_openxr.cpp` only feeds it frames and makes the request. The simulation does not depend on the rate:
+the scheduler places frames by `predictedDisplayTime`, and its tests cover steady 72, 90, 120, 144 and 45
+Hz and mid-stream switches between 90 and 72.
+
+**Migration.** The old default was `RefreshRate` 90. `gEnhancements.VR.DisplayStandard` is a settings
+version: a config with it missing or 0 that has a saved 90 is rewritten to 120 once, then the version is
+stored as 1 (`MigrateDisplayStandard`, run by `InitSettings` before the defaults are registered). Anything
+else, such as a deliberate 72, is left alone, and a 90 chosen after the migration stays 90.
+
+**Eye image size.** The eye swapchains are created at `round(recommended x ResolutionScale)`, rounded to
+even and held to the view configuration's max image rect and the runtime's max swapchain size (`EyeImageSize`).
+The Steam Frame recommends 1728x1728, so the default 1.25 gives 2160x2160. The eye render target follows the
+swapchain size, so the game renders at the size it submits: nothing is rendered larger and blitted down
+(`CopyIntoSwapchain` is a same-size flipped copy). The scale is read when the session is created, so a
+change in the menu applies at the next VR start. Lower it if the game cannot hold the refresh rate;
+resolution should be given up before anything else.
+
+**Log lines** (look for these on the device): `[vr] eye 0: recommended ... resolution_scale 1.25 -> 2160x2160`
+(and eye 1), `eye_size=2160x2160 resolution_scale=1.25` in the `[openxr]` block, `[vr] refresh rate:
+requested 120 Hz (wanted <= 120, session start); offered [...]; runtime reports ...`, `[vr] display refresh
+rate changed: ...` for what the compositor does, and on a fallback `[vr] refresh rate: 120 Hz not held
+(... frames/s over 10 s, twice): falling back to 90 Hz`, then the new `requested` line. A migrated config
+logs `[vr] display standard: saved ...RefreshRate=90 moved to 120 Hz (once)`.
 
 ### In-headset menu
 Hold **Menu + View together for 0.5 s** to open or close the G-Diffuser menu on its **VR** tab (the same
