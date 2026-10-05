@@ -7,7 +7,7 @@ record what the stock renderer does and what was measured; section 4 describes w
 A minimal **in-headset VR settings page with Quit to Steam** exists (section 4, "In-headset menu"): the
 G-Diffuser menu's VR tab on the flat quad, opened by holding Menu + View for 0.5 s. It is not a full
 settings page (no tab set, no pointer, no gameplay or comfort-turn settings yet). The system layer, the
-menu, haptics, the refresh-rate request and fallback, the resolution scale and the `[vr-perf]` line are
+menu, haptics, the one-shot refresh-rate request and held-rate report, the resolution scale and the `[vr-perf]` line are
 implemented but, like everything else here, none of it has been tried by a person in the headset.
 
 Target: optional OpenXR output mode (`GDX_OPENXR=ON` at build time, `--vr` / `GDX_VR=1` at launch)
@@ -173,7 +173,7 @@ Consequences:
 - **Zink overhead** adds CPU cost per GL call; M0-D must measure on this stack.
 - The loader is available as SteamVR's `/opt/steamvr/bin/linuxarm64/libopenxr_loader.so` and a
   system static `libopenxr_loader.a`. We still ship a pinned Khronos loader in `lib/`.
-- 72 Hz is what the runtime starts at; `XR_FB_display_refresh_rate` can request others (the port now asks for 120, see "Display"). 72 Hz/59.94 is a
+- 72 Hz is what the runtime starts at; `XR_FB_display_refresh_rate` can request others (the rate is really SteamVR's per-app setting, see "Display"). 72 Hz/59.94 is a
   non-integer ratio, so the display-time scheduler (M2) is needed from day one.
 
 Worn-headset run (2026-10-01 23:03): `IDLE → READY → SYNCHRONIZED → VISIBLE → FOCUSED` within
@@ -264,7 +264,7 @@ release user, independent of VR, and is worth upstreaming on its own.
 | File | Role |
 | --- | --- |
 | `port/vr/gdx_vr_scheduler.*` | Display-time scheduler: places each XR frame on the 59.94 Hz tick timeline by `predictedDisplayTime`, says how many ticks must run first and at which interpolation t to render. Pure; `gdx_vr_scheduler_tests` (45 checks, incl. 72/90/120/144/45 Hz uniform steps and an hour without drift). |
-| `port/vr/gdx_vr_system.*` | Pure policy, no OpenXR: an adapter over sfvr's View-button state machine, recentre-request merging (Level vs Height), the Menu + View chord, stick-as-D-pad for menu navigation, refresh-rate picking, the 120 -> 90 -> 72 fallback ladder (`RefreshWatch`), the eye image size calculation, the display-standard settings migration, and the `gEnhancements.VR.*` settings table (names, defaults, clamp ranges). `gdx_vr_system_tests` (132 checks, including the cockpit roof lookup, the ladder, the eye size and the migration). |
+| `port/vr/gdx_vr_system.*` | Pure policy, no OpenXR: an adapter over sfvr's View-button state machine, recentre-request merging (Level vs Height), the Menu + View chord, stick-as-D-pad for menu navigation, refresh-rate picking, the held-display-rate watch (`RefreshWatch`: report once, recommend a per-app rate), the display rate from `predictedDisplayPeriod`, the eye image size calculation, the display-standard settings migration, and the `gEnhancements.VR.*` settings table (names, defaults, clamp ranges). `gdx_vr_system_tests` (134 checks, including the cockpit roof lookup, the held-rate watch, the eye size and the migration). |
 | `port/third_party/sfvr/` | The shared cross-port VR library (C99), vendored by copying from `~/code/sfvr`; `VERSION` holds the pinned commit. Never edited here. Built as `gdx_sfvr`. Used for the View button, the haptic queue and the `[vr-perf]` line. |
 | `port/vr/gdx_vr_math.*` | Per-eye projection·view in the game's conventions; asymmetric XR FOV; s15.16 fit (uniform scale, NDC-invariant). `gdx_vr_math_tests` (74 checks) compares against a transcription of `Matrix_SetLookAt`/`Matrix_SetFrustrum`/`Camera_CalculateProjectionViewMtx`, and checks cabin-point precision of the camera-relative eye projection. |
 | `port/vr/gdx_openxr.*` | Instance/session/swapchains (GL, Xlib/GLX binding), session states, the shared frame protocol, flat quad, stereo projection layer, head-locked HUD quad, OpenXR controller actions, diagnostics. |
@@ -319,7 +319,7 @@ units per 60 Hz tick, i.e. 10 units = 1 m), `gEnhancements.VR.WideCull` (1),
 `gEnhancements.VR.HorizonLock` (0, default off: the viewer rolls with the chase camera; 1 removes that roll).
 
 Also registered: `gEnhancements.VR.Haptics` (0..1, 0.6: scale for every haptic pulse) and
-`gEnhancements.VR.RefreshRate` (72..120, 120: Hz ceiling for the refresh-rate request), `gEnhancements.VR.ResolutionScale` (0.75..1.5, 1.25: eye image size as a multiple of the runtime's recommendation, read at VR start) and `gEnhancements.VR.DisplayStandard` (settings-migration version, currently 1; not shown in the menu).
+`gEnhancements.VR.RefreshRate` (72..120, 120: Hz asked of the runtime once per session; no effect on the Steam Frame), `gEnhancements.VR.ResolutionScale` (0.75..1.5, 1.25: eye image size as a multiple of the runtime's recommendation, read at VR start) and `gEnhancements.VR.DisplayStandard` (settings-migration version, currently 1; not shown in the menu).
 
 Persistence and ranges: the first VR launch registers every `gEnhancements.VR.*` key with their
 defaults and saves the libultraship config (`CVarSave`), so they appear in the config file and persist
@@ -565,27 +565,36 @@ Recentre details:
   <y> (updated|kept)`.
 
 ### Display: 120 Hz at native resolution
-This follows the cross-port display standard (steam-frame-vr-port, standard.md section 9, decided
-2026-10-05): 120 Hz at about the panel's own 2160x2160 per eye, the way Half-Life (Lambda1VR) runs. **None
-of it has been measured on the device yet**: whether the Frame offers 120 to this app, whether the GPU
-holds 2160x2160 at 120 Hz through Zink, and whether the fallback ever fires are all still open.
+This follows the cross-port display standard (steam-frame-vr-port, standard.md section 9): 120 Hz at about
+the panel's own 2160x2160 per eye, the way Half-Life (Lambda1VR) runs. **None of it has been measured on
+the device yet**: whether F-Zero X holds 120 Hz at 2160x2160 through Zink, and whether the report below ever
+fires, are still open.
 
-**Refresh rate.** When the runtime advertises `XR_FB_display_refresh_rate` the extension is enabled, the
-offered rates are enumerated and logged, and the highest offered rate at or below
-`gEnhancements.VR.RefreshRate` (72..120, default 120) is requested with `xrRequestDisplayRefreshRateFB` as
-the session starts running (and again whenever the CVar changes). The real rate is SteamVR's per-app
-preferred rate and only applies to Steam-title launches, so the Steam title's per-app rate has to be set
-to 120 once in SteamVR's settings in the headset; the request cannot raise it.
+**The app cannot change the refresh rate on the Frame.** SteamVR runs a title at its per-app preferred
+rate, set by the user in the headset, and only for Steam-title launches (a launch outside Steam runs at 72).
+The runtime offers the app only that rate, and the `XR_FB_display_refresh_rate` list can say 90 while the
+compositor runs 120. So this port does not try to manage the rate:
+- `xrRequestDisplayRefreshRateFB` is called at most once per OpenXR session, only for an offered rate: the
+  closest offered rate at or below `gEnhancements.VR.RefreshRate` (72..120, default 120). If none is offered
+  at or below it, nothing is requested. It is never retried and never stepped down (a retry cannot take
+  effect; Halo's 20 s retries were never granted). Changing the setting mid-session does nothing until the
+  next VR start.
+- The real display rate is taken from `predictedDisplayPeriod` (`DisplayRateHz`), not from the request or the
+  enumerated list. `gdx_vr::RefreshWatch` counts 10 s windows while focused: after two consecutive windows
+  under 90% of the display rate it reports once per session (windows restart on a focus change or a change
+  of display rate, so only worn time at one rate counts). There is no automatic fallback ladder, because
+  it could not take effect.
+- The report is a log line saying the game is not holding the display rate and recommending the next lower
+  standard per-app rate (`RecommendedPerAppRate`: 120 -> 90, 90 -> 72); at 72 it says there is nothing lower
+  and suggests a lower `ResolutionScale`. The decision is pure code in `gdx_vr_system.*`, covered by
+  `gdx_vr_system_tests`; `gdx_openxr.cpp` only feeds it frames and logs.
+- The simulation does not depend on the rate: the scheduler places frames by `predictedDisplayTime`, and its
+  tests cover steady 72, 90, 120, 144 and 45 Hz and mid-stream switches between 90 and 72.
 
-**Fallback ladder, 120 -> 90 -> 72.** While focused, if the XR frame rate stays under 90% of the current
-rate for two consecutive 10 s windows, the next lower rate the runtime enumerates is requested (never
-below 72; if 90 is not offered, 120 goes straight to 72). The count starts over at each step, so every
-rung needs its own two bad windows. Windows restart on any focus change, so only worn time counts. The
-fallback lasts for the session and is never written back to `RefreshRate`. The decision is pure code,
-`gdx_vr::RefreshWatch` and `NextLowerRefreshRate` in `gdx_vr_system.*`, covered by `gdx_vr_system_tests`;
-`gdx_openxr.cpp` only feeds it frames and makes the request. The simulation does not depend on the rate:
-the scheduler places frames by `predictedDisplayTime`, and its tests cover steady 72, 90, 120, 144 and 45
-Hz and mid-stream switches between 90 and 72.
+**Wear checklist.** Set F-Zero X to 120 Hz in SteamVR per-app settings (Settings > Video > Per-application
+video settings; the menu names are the closest the notes give, not checked on the device). Do it once, in the
+headset, then launch the game from Steam. If the log later reports the rate not held, set the rate it
+recommends instead.
 
 **Migration.** The old default was `RefreshRate` 90. `gEnhancements.VR.DisplayStandard` is a settings
 version: a config with it missing or 0 that has a saved 90 is rewritten to 120 once, then the version is
@@ -602,10 +611,12 @@ resolution should be given up before anything else.
 
 **Log lines** (look for these on the device): `[vr] eye 0: recommended ... resolution_scale 1.25 -> 2160x2160`
 (and eye 1), `eye_size=2160x2160 resolution_scale=1.25` in the `[openxr]` block, `[vr] refresh rate:
-requested 120 Hz (wanted <= 120, session start); offered [...]; runtime reports ...`, `[vr] display refresh
-rate changed: ...` for what the compositor does, and on a fallback `[vr] refresh rate: 120 Hz not held
-(... frames/s over 10 s, twice): falling back to 90 Hz`, then the new `requested` line. A migrated config
-logs `[vr] display standard: saved ...RefreshRate=90 moved to 120 Hz (once)`.
+requested 120 Hz once (wanted <= 120); offered [...]; runtime reports ...` (or `... none at or below it,
+nothing requested`, or `request for ... failed ...; not retried`), `[vr] display refresh rate changed: ...`,
+the `period=` in the `[vr] pacing:` line (8.333 ms means 120 Hz), and, if the game falls behind, once:
+`[vr] refresh rate: the game is not holding the display rate: N frames/s over two 10 s windows at 120 Hz. The
+app cannot change the rate on the Steam Frame; set F-Zero X's SteamVR per-app refresh rate to 90 Hz ...`. A
+migrated config logs `[vr] display standard: saved ...RefreshRate=90 moved to 120 Hz (once)`.
 
 ### In-headset menu
 Hold **Menu + View together for 0.5 s** to open or close the G-Diffuser menu on its **VR** tab (the same

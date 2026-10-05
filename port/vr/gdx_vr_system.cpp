@@ -131,15 +131,24 @@ float PickRefreshRate(const float* rates, unsigned count, float hz) {
 
 namespace gdx_vr {
 
-float NextLowerRefreshRate(const float* rates, unsigned count, float current) {
-    float next = 0.0f;
-    for (unsigned i = 0; i < count; i++) {
-        const float r = rates[i];
-        if (std::isfinite(r) && r < current - 0.5f && r >= kRefreshFloorHz - 0.5f && r > next) {
-            next = r;
-        }
+float DisplayRateHz(long long periodNs) {
+    return periodNs > 0 ? (float)(1e9 / (double)periodNs) : 0.0f;
+}
+
+float RecommendedPerAppRate(float displayHz) {
+    if (!std::isfinite(displayHz)) {
+        return 0.0f;
     }
-    return next;
+    if (displayHz > 130.0f) {
+        return 120.0f;
+    }
+    if (displayHz > 105.0f) {
+        return 90.0f;
+    }
+    if (displayHz > 81.0f) {
+        return 72.0f;
+    }
+    return 0.0f;
 }
 
 void RefreshWatch::Restart() {
@@ -148,46 +157,44 @@ void RefreshWatch::Restart() {
     misses_ = 0;
 }
 
-RefreshDecision RefreshWatch::Frame(double nowSeconds, bool focused, float target, const float* rates,
-                                    unsigned count) {
-    RefreshDecision d;
-    if (target <= 0.0f) {
-        return d;
+RefreshAdvice RefreshWatch::Frame(double nowSeconds, bool focused, float displayHz) {
+    RefreshAdvice a;
+    if (reported_ || !(displayHz > 0.0f)) {
+        return a;
     }
-    if (!started_ || focused != windowFocused_) {
-        // A window only counts while worn: restart it whenever focus changes.
+    if (!started_ || focused != windowFocused_ || std::fabs(displayHz - windowHz_) > 2.0f) {
+        // A window only counts while worn and at one display rate: restart it when either changes.
         started_ = true;
         windowStart_ = nowSeconds;
         windowFocused_ = focused;
+        windowHz_ = displayHz;
         frames_ = 0;
         misses_ = 0;
-        return d;
+        return a;
     }
     frames_++;
     const double seconds = nowSeconds - windowStart_;
     if (seconds < kWindowSeconds) {
-        return d;
+        return a;
     }
     const double fps = (double)frames_ / seconds;
     windowStart_ = nowSeconds;
     frames_ = 0;
     if (!focused) {
-        return d;
+        return a;
     }
-    if (fps < (double)target * kMissFraction) {
-        if (++misses_ >= kMissesBeforeStep) {
-            const float next = NextLowerRefreshRate(rates, count, target);
-            misses_ = 0;
-            if (next > 0.0f) {
-                d.stepDown = true;
-                d.next = next;
-                d.fps = fps;
-            }
+    if (fps < (double)displayHz * kMissFraction) {
+        if (++misses_ >= kMissesBeforeReport) {
+            reported_ = true;
+            a.notHeld = true;
+            a.fps = fps;
+            a.displayHz = displayHz;
+            a.recommendHz = RecommendedPerAppRate(displayHz);
         }
     } else {
         misses_ = 0;
     }
-    return d;
+    return a;
 }
 
 int EyeImageSize(int recommended, double scale, int maxImageRect, int maxSwapchain) {

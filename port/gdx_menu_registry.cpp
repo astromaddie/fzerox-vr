@@ -1249,10 +1249,10 @@ void GdxMenu::RegisterMenu() {
                                    .DefaultValue(120)
                                    .ShowButtons(false)
                                    .LabelPosition(UIWidgets::LabelPositions::Near)
-                                   .Tooltip("The headset is asked for the highest refresh rate it offers at or below\n"
-                                            "this. If the game cannot hold it (under 90% of the rate for two 10 s\n"
-                                            "windows while worn) it steps down, 120 to 90 to 72 Hz, for the rest\n"
-                                            "of the session; the setting itself is not changed."))
+                                   .Tooltip("The rate asked of the runtime, once at the start of VR, for runtimes that\n"
+                                            "honour it. On the Steam Frame the rate comes from SteamVR's per-app\n"
+                                            "setting for this game (set it in the headset), and this has no effect.\n"
+                                            "If the game cannot hold the rate, the log says which lower rate to set."))
                       .SearchTerms("refresh rate hz 72 90 120 display"));
         AddWidget("VR", "VR Settings", SECTION_COLUMN_1,
                   WidgetInfo{ .name = "Resolution scale (next VR start)", .cVar = "gEnhancements.VR.ResolutionScale",

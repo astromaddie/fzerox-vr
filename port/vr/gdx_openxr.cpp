@@ -280,11 +280,8 @@ struct State {
     PFN_xrEnumerateDisplayRefreshRatesFB enumerateRates = nullptr;
     PFN_xrRequestDisplayRefreshRateFB requestRate = nullptr;
     PFN_xrGetDisplayRefreshRateFB getRate = nullptr;
-    int refreshWanted = 0;       // gEnhancements.VR.RefreshRate as last applied; 0 = not applied yet
-    float refreshTarget = 0.0f;  // rate actually requested from the runtime, Hz (0 = none)
-    float refreshRates[32] = {}; // rates the runtime enumerated at the last request, Hz
-    unsigned refreshRateCount = 0;
-    gdx_vr::RefreshWatch refreshWatch; // the fallback ladder's windows and misses (gdx_vr_system)
+    bool refreshAsked = false;   // the one xrRequestDisplayRefreshRateFB of this session has been considered
+    gdx_vr::RefreshWatch refreshWatch; // "is the display rate held while worn", report-once (gdx_vr_system)
     bool cockpit = false;            // cockpit view instead of the chase camera
     bool focused = false;
 
@@ -1154,6 +1151,9 @@ bool CreateEverything() {
         return false;
     }
 
+    s.refreshAsked = false; // a new XrSession: one refresh-rate request and one held-rate report
+    s.refreshWatch = gdx_vr::RefreshWatch{};
+
     XrReferenceSpaceCreateInfo rsci{ XR_TYPE_REFERENCE_SPACE_CREATE_INFO };
     rsci.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_LOCAL;
     rsci.poseInReferenceSpace.orientation.w = 1.0f;
@@ -1272,33 +1272,37 @@ void SetDesktopSwapBlocking(bool block) {
 
 // --- Display refresh rate ----------------------------------------------------------------------
 //
-// gEnhancements.VR.RefreshRate (72..120, default 120) is a ceiling: the highest rate the runtime offers
-// that is <= it is requested. A higher rate is only worth it if the game holds it while worn, so the
-// monitor falls back down the ladder 120 -> 90 -> 72 (each step is the next lower rate the runtime
-// enumerates, never below 72): two consecutive 10 s windows in which the XR frame rate stayed under 90%
-// of the current rate, while focused, step down one rung, and the count starts again at each rung. The
-// decision lives in gdx_vr::RefreshWatch (tests/gdx_vr_system_tests.cpp). A fallback lasts for the
-// session and is never written back to the CVar. The simulation is unaffected by any of this: the
-// scheduler places frames by predictedDisplayTime (tests/gdx_vr_scheduler_tests.cpp).
+// The app cannot change the refresh rate on the Steam Frame: SteamVR runs a title at its per-app
+// preferred rate (set by the user in the headset), applies it only to Steam-title launches, and offers
+// the app only that rate. A request is therefore made at most once per session, and only for a rate the
+// runtime offers, in case a runtime does honour it. It is never retried and never stepped down: a
+// retry cannot take effect, and Halo's 20 s retries were never granted. What the app does do is watch
+// the real display rate (from predictedDisplayPeriod, not the requested or enumerated rate, which can
+// disagree with what the compositor runs) and, after two 10 s windows under 90% of it while worn, say
+// once what per-app rate to set instead. The decision is in gdx_vr::RefreshWatch
+// (tests/gdx_vr_system_tests.cpp). The simulation is unaffected by any of this: the scheduler places
+// frames by predictedDisplayTime (tests/gdx_vr_scheduler_tests.cpp).
 
-// Ask the runtime for the best offered rate <= hz. Returns the rate requested, or 0.
-float RequestRefreshRate(float hz, const char* why) {
+// The session's one refresh-rate request: the offered rate closest to gEnhancements.VR.RefreshRate from
+// below. Nothing is requested if the runtime offers none at or below it.
+void RequestRefreshRateOnce(float hz) {
     State& s = S();
+    if (s.refreshAsked) {
+        return;
+    }
+    s.refreshAsked = true;
     if (s.enumerateRates == nullptr || s.requestRate == nullptr || s.session == XR_NULL_HANDLE) {
-        return 0.0f;
+        gdx_port_logf("[vr] refresh rate: XR_FB_display_refresh_rate unavailable; the rate is SteamVR's per-app setting\n");
+        return;
     }
     float rates[32];
     uint32_t count = 0;
     if (!Check(s.enumerateRates(s.session, 32, &count, rates), "xrEnumerateDisplayRefreshRatesFB")) {
-        return 0.0f;
+        return;
     }
     if (count > 32) {
         count = 32;
     }
-    for (uint32_t i = 0; i < count; i++) {
-        s.refreshRates[i] = rates[i];
-    }
-    s.refreshRateCount = count;
     char list[256];
     size_t off = 0;
     for (uint32_t i = 0; i < count && off + 16 < sizeof(list); i++) {
@@ -1306,44 +1310,45 @@ float RequestRefreshRate(float hz, const char* why) {
     }
     list[off < sizeof(list) ? off : sizeof(list) - 1] = '\0';
     const float chosen = gdx_vr::PickRefreshRate(rates, count, hz);
-    if (chosen <= 0.0f || !Check(s.requestRate(s.session, chosen), "xrRequestDisplayRefreshRateFB")) {
-        gdx_port_logf("[vr] refresh rate: wanted <= %.0f Hz (%s); offered [%s]: none requested\n", (double)hz, why,
+    if (chosen <= 0.0f) {
+        gdx_port_logf("[vr] refresh rate: wanted <= %.0f Hz; offered [%s]: none at or below it, nothing requested\n",
+                      (double)hz, list);
+        return;
+    }
+    if (!Check(s.requestRate(s.session, chosen), "xrRequestDisplayRefreshRateFB")) {
+        gdx_port_logf("[vr] refresh rate: request for %.0f Hz failed (offered [%s]); not retried\n", (double)chosen,
                       list);
-        return 0.0f;
+        return;
     }
     float current = 0.0f;
     if (s.getRate != nullptr) {
         s.getRate(s.session, &current);
     }
-    gdx_port_logf("[vr] refresh rate: requested %.0f Hz (wanted <= %.0f, %s); offered [%s]; runtime reports %.1f Hz\n",
-                  (double)chosen, (double)hz, why, list, (double)current);
-    s.refreshTarget = chosen;
-    s.refreshWatch.Restart();
-    return chosen;
+    gdx_port_logf("[vr] refresh rate: requested %.0f Hz once (wanted <= %.0f); offered [%s]; runtime reports %.1f Hz; "
+                  "on the Steam Frame the rate is set by SteamVR's per-app setting and this may not change it\n",
+                  (double)chosen, (double)hz, list, (double)current);
 }
 
-// Once per XR frame, from PerfFrame's call site: applies a changed CVar and runs the fallback.
-void RefreshRateFrame(double nowS) {
+// Once per XR frame, from EnsurePending: the one-shot request, then the held-rate watch.
+void RefreshRateFrame(const XrFrameState& fs, double nowS) {
     State& s = S();
-    if (s.requestRate == nullptr) {
+    RequestRefreshRateOnce((float)SettingInt(kSetRefreshRate));
+    const float displayHz = gdx_vr::DisplayRateHz((long long)fs.predictedDisplayPeriod);
+    const gdx_vr::RefreshAdvice a = s.refreshWatch.Frame(nowS, s.focused, displayHz);
+    if (!a.notHeld) {
         return;
     }
-    const int wanted = SettingInt(kSetRefreshRate);
-    if (wanted != s.refreshWanted) {
-        s.refreshWanted = wanted;
-        RequestRefreshRate((float)wanted, s.refreshTarget == 0.0f ? "session start" : "setting changed");
-        return;
-    }
-    const gdx_vr::RefreshDecision d =
-        s.refreshWatch.Frame(nowS, s.focused, s.refreshTarget, s.refreshRates, s.refreshRateCount);
-    if (d.stepDown) {
-        const float from = s.refreshTarget;
-        gdx_port_logf("[vr] refresh rate: %.0f Hz not held (%.1f frames/s over 10 s, twice): falling back to %.0f Hz\n",
-                      (double)from, d.fps, (double)d.next);
-        if (RequestRefreshRate(d.next, "fallback") <= 0.0f) {
-            gdx_port_logf("[vr] refresh rate: fallback to %.0f Hz was not accepted; staying at %.0f Hz\n",
-                          (double)d.next, (double)from);
-        }
+    if (a.recommendHz > 0.0f) {
+        gdx_port_logf("[vr] refresh rate: the game is not holding the display rate: %.1f frames/s over two 10 s windows "
+                      "at %.0f Hz. The app cannot change the rate on the Steam Frame; set F-Zero X's SteamVR per-app "
+                      "refresh rate to %.0f Hz (Settings > Video > Per-application video settings) and restart the game. "
+                      "Reported once.\n",
+                      a.fps, (double)a.displayHz, (double)a.recommendHz);
+    } else {
+        gdx_port_logf("[vr] refresh rate: the game is not holding the display rate: %.1f frames/s over two 10 s windows "
+                      "at %.0f Hz, and there is no lower standard rate to recommend. Try a lower ResolutionScale. "
+                      "Reported once.\n",
+                      a.fps, (double)a.displayHz);
     }
 }
 
@@ -1362,8 +1367,6 @@ void HandleSessionState(XrSessionState st) {
             sbi.primaryViewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
             if (Check(xrBeginSession(s.session, &sbi), "xrBeginSession")) {
                 s.phase = Phase::Running;
-                s.refreshWanted = 0; // (re)apply the refresh-rate setting on the first frame
-                s.refreshTarget = 0.0f;
                 s.refreshWatch.Restart();
                 s.scheduler.Reset();
                 s.pending = PendingFrame{};
@@ -1539,7 +1542,7 @@ bool EnsurePending() {
     s.pending.ticksOwed = plan.ticksToRun;
     s.xrFrames++;
     PerfFrame(fs);
-    RefreshRateFrame(NowMs() * 0.001);
+    RefreshRateFrame(fs, NowMs() * 0.001);
     return true;
 }
 

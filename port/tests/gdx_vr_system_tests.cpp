@@ -215,38 +215,36 @@ static void CaseRefreshPick() {
     check("empty list: nothing", PickRefreshRate(steam, 0, 90.0f) == 0.0f);
 }
 
-static void CaseNextLower() {
-    using gdx_vr::NextLowerRefreshRate;
-    const float steam[] = { 72.0f, 90.0f, 120.0f };
-    const float shuffled[] = { 120.0f, 72.0f, 90.0f, 60.0f };
-    const float noNinety[] = { 72.0f, 120.0f };
-    check("120 -> 90", NextLowerRefreshRate(steam, 3, 120.0f) == 90.0f);
-    check("90 -> 72", NextLowerRefreshRate(steam, 3, 90.0f) == 72.0f);
-    check("72 is the bottom", NextLowerRefreshRate(steam, 3, 72.0f) == 0.0f);
-    check("list order is irrelevant", NextLowerRefreshRate(shuffled, 4, 120.0f) == 90.0f);
-    check("never below 72, even if 60 is offered", NextLowerRefreshRate(shuffled, 4, 72.0f) == 0.0f);
-    check("picks from what is offered: 120 -> 72 without a 90", NextLowerRefreshRate(noNinety, 2, 120.0f) == 72.0f);
-    check("a rate the runtime does not list still steps to the next below it",
-          NextLowerRefreshRate(steam, 3, 100.0f) == 90.0f);
-    check("89.99 is not above 90", NextLowerRefreshRate(steam, 3, 89.99f) == 72.0f);
-    check("empty list: nothing", NextLowerRefreshRate(steam, 0, 120.0f) == 0.0f);
+static void CaseDisplayRate() {
+    using gdx_vr::DisplayRateHz;
+    using gdx_vr::RecommendedPerAppRate;
+    check("8.333 ms is 120 Hz", std::fabs(DisplayRateHz(8333333) - 120.0f) < 0.01f);
+    check("11.111 ms is 90 Hz", std::fabs(DisplayRateHz(11111111) - 90.0f) < 0.01f);
+    check("13.889 ms is 72 Hz", std::fabs(DisplayRateHz(13888889) - 72.0f) < 0.01f);
+    check("a missing period is 0", DisplayRateHz(0) == 0.0f && DisplayRateHz(-5) == 0.0f);
+    check("at 120 recommend 90", RecommendedPerAppRate(120.0f) == 90.0f);
+    check("at 119.97 (a real 8.334 ms period) recommend 90", RecommendedPerAppRate(119.97f) == 90.0f);
+    check("at 90 recommend 72", RecommendedPerAppRate(90.0f) == 72.0f);
+    check("at 72 there is nothing lower", RecommendedPerAppRate(72.0f) == 0.0f);
+    check("at 144 recommend 120", RecommendedPerAppRate(144.0f) == 120.0f);
+    check("unknown or NaN: nothing", RecommendedPerAppRate(0.0f) == 0.0f && RecommendedPerAppRate(std::nanf("")) == 0.0f);
 }
 
-// Feeds a RefreshWatch `windows` whole 10 s windows of `fps` frames per second, each ending exactly on
-// its 10 s mark, and returns the first decision that stepped down (or an empty one). `prime` makes one
-// call first at `t`, which is what starts the first window after a Restart() or a focus change.
-static gdx_vr::RefreshDecision RunWindows(gdx_vr::RefreshWatch& w, double& t, int windows, double fps, bool focused,
-                                          float target, const float* rates, unsigned count, bool prime = false) {
+// Feeds a RefreshWatch `windows` whole 10 s windows of `fps` frames per second against `displayHz`, each
+// ending exactly on its 10 s mark, and returns the first advice that fired (or an empty one). `prime`
+// makes one call first at `t`, which is what starts the first window after a Restart() or a focus change.
+static gdx_vr::RefreshAdvice RunWindows(gdx_vr::RefreshWatch& w, double& t, int windows, double fps, bool focused,
+                                        float displayHz, bool prime = false) {
     if (prime) {
-        w.Frame(t, focused, target, rates, count);
+        w.Frame(t, focused, displayHz);
     }
     const int n = (int)(fps * 10.0);
     for (int i = 0; i < windows; i++) {
         for (int k = 1; k <= n; k++) {
-            const gdx_vr::RefreshDecision d = w.Frame(t + 10.0 * k / n, focused, target, rates, count);
-            if (d.stepDown) {
+            const gdx_vr::RefreshAdvice a = w.Frame(t + 10.0 * k / n, focused, displayHz);
+            if (a.notHeld) {
                 t += 10.0 * k / n;
-                return d;
+                return a;
             }
         }
         t += 10.0;
@@ -254,70 +252,76 @@ static gdx_vr::RefreshDecision RunWindows(gdx_vr::RefreshWatch& w, double& t, in
     return {};
 }
 
-static void CaseRefreshLadder() {
+static void CaseRefreshWatch() {
     using gdx_vr::RefreshWatch;
-    const float rates[] = { 72.0f, 90.0f, 120.0f };
 
     {
-        std::printf("  ladder: holding the rate never steps\n");
+        std::printf("  watch: holding the display rate says nothing\n");
         RefreshWatch w;
         double t = 100.0;
-        check("a minute at 120 steps nothing", !RunWindows(w, t, 6, 120.0, true, 120.0f, rates, 3, true).stepDown);
-        check("110 fps is within 90% of 120 too", !RunWindows(w, t, 6, 110.0, true, 120.0f, rates, 3).stepDown);
+        check("a minute at 120 on a 120 display", !RunWindows(w, t, 6, 120.0, true, 120.0f, true).notHeld);
+        check("110 fps is within 90% of 120", !RunWindows(w, t, 6, 110.0, true, 120.0f).notHeld);
     }
     {
-        std::printf("  ladder: 120 -> 90 -> 72\n");
+        std::printf("  watch: two bad windows report once\n");
         RefreshWatch w;
         double t = 100.0;
-        // 100 fps is under 108 (90% of 120) but is not under 81 (90% of 90).
         const double t0 = t;
-        check("one bad window at 120 does not step", !RunWindows(w, t, 1, 100.0, true, 120.0f, rates, 3, true).stepDown);
-        gdx_vr::RefreshDecision d = RunWindows(w, t, 1, 100.0, true, 120.0f, rates, 3);
-        check("the second one steps to 90", d.stepDown && d.next == 90.0f);
-        check("the failing frame rate is reported", std::fabs(d.fps - 100.0) < 0.5);
+        // 100 fps is under 108 (90% of 120).
+        check("one bad window is not enough", !RunWindows(w, t, 1, 100.0, true, 120.0f, true).notHeld && w.Misses() == 1);
+        const gdx_vr::RefreshAdvice a = RunWindows(w, t, 1, 100.0, true, 120.0f);
+        check("the second one reports", a.notHeld && w.Reported());
+        check("it recommends 90 for a 120 display", a.recommendHz == 90.0f && std::fabs(a.displayHz - 120.0f) < 0.01f);
+        check("and carries the failing frame rate", std::fabs(a.fps - 100.0) < 0.5);
         check("after two 10 s windows, not before", std::fabs((t - t0) - 20.0) < 0.01);
+        check("never again: no matter how long it stays bad", !RunWindows(w, t, 30, 40.0, true, 120.0f).notHeld);
         w.Restart();
-        check("at 90 the same 100 fps is fine", !RunWindows(w, t, 6, 100.0, true, 90.0f, rates, 3, true).stepDown);
-        check("one bad window at 90 does not step", !RunWindows(w, t, 1, 70.0, true, 90.0f, rates, 3).stepDown);
-        d = RunWindows(w, t, 1, 70.0, true, 90.0f, rates, 3);
-        check("the second one steps to 72", d.stepDown && d.next == 72.0f);
-        w.Restart();
-        check("nothing below 72", !RunWindows(w, t, 12, 20.0, true, 72.0f, rates, 3, true).stepDown);
+        check("even after the window restarts", !RunWindows(w, t, 6, 40.0, true, 120.0f, true).notHeld);
     }
     {
-        std::printf("  ladder: the counter resets\n");
+        std::printf("  watch: measured against the display, not a request\n");
         RefreshWatch w;
         double t = 0.0;
-        check("a bad window", !RunWindows(w, t, 1, 60.0, true, 120.0f, rates, 3, true).stepDown && w.Misses() == 1);
-        check("a good window clears the miss", !RunWindows(w, t, 1, 120.0, true, 120.0f, rates, 3).stepDown &&
-                                                   w.Misses() == 0);
-        check("so one bad one afterwards still does not step", !RunWindows(w, t, 1, 60.0, true, 120.0f, rates, 3).stepDown);
-        check("the second consecutive one does", RunWindows(w, t, 1, 60.0, true, 120.0f, rates, 3).stepDown);
-        w.Restart();
-        check("a step leaves no misses behind", w.Misses() == 0);
-        check("one bad window at the new rate does not step again",
-              !RunWindows(w, t, 1, 40.0, true, 90.0f, rates, 3, true).stepDown);
+        check("100 fps is fine on a 90 Hz display", !RunWindows(w, t, 6, 100.0, true, 90.0f, true).notHeld);
+        RefreshWatch w2;
+        t = 0.0;
+        const gdx_vr::RefreshAdvice a = RunWindows(w2, t, 2, 70.0, true, 90.0f, true);
+        check("70 fps on a 90 Hz display reports and recommends 72", a.notHeld && a.recommendHz == 72.0f);
+        RefreshWatch w3;
+        t = 0.0;
+        const gdx_vr::RefreshAdvice b = RunWindows(w3, t, 2, 40.0, true, 72.0f, true);
+        check("at 72 it reports with nothing lower to recommend", b.notHeld && b.recommendHz == 0.0f);
     }
     {
-        std::printf("  ladder: only while worn\n");
+        std::printf("  watch: the counter resets\n");
         RefreshWatch w;
         double t = 0.0;
-        check("a bad minute unfocused never steps", !RunWindows(w, t, 6, 30.0, false, 120.0f, rates, 3, true).stepDown);
-        check("a miss while worn counts", !RunWindows(w, t, 1, 30.0, true, 120.0f, rates, 3, true).stepDown &&
-                                              w.Misses() == 1);
-        w.Frame(t + 1.0, false, 120.0f, rates, 3);
+        check("a bad window", !RunWindows(w, t, 1, 60.0, true, 120.0f, true).notHeld && w.Misses() == 1);
+        check("a good window clears the miss", !RunWindows(w, t, 1, 120.0, true, 120.0f).notHeld && w.Misses() == 0);
+        check("so one bad one afterwards still does not report", !RunWindows(w, t, 1, 60.0, true, 120.0f).notHeld);
+        check("the second consecutive one does", RunWindows(w, t, 1, 60.0, true, 120.0f).notHeld);
+    }
+    {
+        std::printf("  watch: only while worn, and at one display rate\n");
+        RefreshWatch w;
+        double t = 0.0;
+        check("a bad minute unfocused never reports", !RunWindows(w, t, 6, 30.0, false, 120.0f, true).notHeld);
+        check("a miss while worn counts", !RunWindows(w, t, 1, 30.0, true, 120.0f, true).notHeld && w.Misses() == 1);
+        w.Frame(t + 1.0, false, 120.0f);
         check("losing focus forgets it", w.Misses() == 0);
         t += 1.0;
         check("and a window after regaining focus is only the first miss",
-              !RunWindows(w, t, 1, 30.0, true, 120.0f, rates, 3, true).stepDown && w.Misses() == 1);
-    }
-    {
-        std::printf("  ladder: no rate below, no step\n");
-        RefreshWatch w;
-        const float only[] = { 120.0f };
-        double t = 0.0;
-        check("a lone 120 has nowhere to go", !RunWindows(w, t, 9, 30.0, true, 120.0f, only, 1, true).stepDown);
-        check("no target, no decisions", !w.Frame(t + 20.0, true, 0.0f, rates, 3).stepDown);
+              !RunWindows(w, t, 1, 30.0, true, 120.0f, true).notHeld && w.Misses() == 1);
+        w.Frame(t + 0.1, true, 90.0f);
+        check("a display rate change restarts the count", w.Misses() == 0);
+        check("jitter within 2 Hz does not", [&] {
+            RefreshWatch j;
+            double u = 0.0;
+            RunWindows(j, u, 1, 30.0, true, 120.0f, true);
+            j.Frame(u + 0.01, true, 119.7f);
+            return j.Misses() == 1;
+        }());
+        check("no display rate, no counting", !w.Frame(t + 50.0, true, 0.0f).notHeld);
     }
 }
 
@@ -458,8 +462,8 @@ int main() {
     CaseChord();
     CaseStickAsDpad();
     CaseRefreshPick();
-    CaseNextLower();
-    CaseRefreshLadder();
+    CaseDisplayRate();
+    CaseRefreshWatch();
     CaseEyeSize();
     CaseDisplayMigration();
     CaseSettings();

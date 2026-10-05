@@ -77,7 +77,7 @@ enum SettingId {
     kSetCabinMirror, // rear-view mirror in the cabin: one extra low-resolution render per tick
     kSetWorldScale,
     kSetHaptics, // scale for every haptic pulse (standard.md section 6), 0 = off
-    kSetRefreshRate, // Hz ceiling for the display refresh-rate request (XR_FB_display_refresh_rate)
+    kSetRefreshRate, // Hz asked of the runtime once per session (XR_FB_display_refresh_rate); the Frame ignores it
     kSetResolutionScale, // eye image size = runtime-recommended size x this; applies at the next VR start
     kSetDisplayStandard, // settings-migration version for the display defaults (kDisplayStandardVersion)
     kSettingCount
@@ -125,42 +125,49 @@ bool TriggerClick(bool wasDown, float value);
 // for values such as 89.99; 0 when none qualifies or the list is empty.
 float PickRefreshRate(const float* rates, unsigned count, float hz);
 
-// The next rate down the fallback ladder: the highest of `rates` that is below `current` by more than
-// 0.5 Hz and is not under kRefreshFloorHz; 0 when there is none (already at the bottom, or the runtime
-// offers nothing lower). With 120, 90 and 72 offered that is 120 -> 90 -> 72, but it is picked from
-// what the runtime enumerates, not from a fixed list.
-constexpr float kRefreshFloorHz = 72.0f;
-float NextLowerRefreshRate(const float* rates, unsigned count, float current);
+// The display's real refresh rate, from the runtime's predictedDisplayPeriod (nanoseconds); 0 when the
+// period is missing. On the Steam Frame the app cannot change the rate: SteamVR runs the title at its
+// per-app preferred rate, and the XR_FB_display_refresh_rate list can disagree with it, so this is the
+// number to trust (standard.md section 9).
+float DisplayRateHz(long long periodNs);
 
-// What RefreshWatch decided for one frame.
-struct RefreshDecision {
-    bool stepDown = false; // request `next` now (the ladder has run out of patience at the current rate)
-    float next = 0.0f;     // the lower enumerated rate to ask for
-    double fps = 0.0;      // the frame rate that failed the last window (for the log)
+// The per-app rate to recommend when the game cannot hold `displayHz`: the next lower standard rate
+// (120 -> 90, 90 -> 72). 0 when already at 72 or below, where there is nothing lower to suggest.
+float RecommendedPerAppRate(float displayHz);
+
+// What RefreshWatch concluded for one frame.
+struct RefreshAdvice {
+    bool notHeld = false;      // true on the one frame where the report is due, once per session
+    double fps = 0.0;          // the frame rate of the window that tripped it
+    float displayHz = 0.0f;    // the display rate it was measured against
+    float recommendHz = 0.0f;  // per-app rate to suggest (0: nothing lower)
 };
 
-// The fallback ladder's bookkeeping, pure so it is unit-tested without a runtime or a clock. Fed once
-// per XR frame while a rate `target` is requested. A window is 10 s; one that ends under 90% of the
-// target while focused is a miss, a good one clears the misses, and two misses in a row step down to
-// the next lower enumerated rate. Windows only count while worn: any focus change restarts the window
-// and forgets the misses. After a step the caller calls Restart() (the new rate gets two fresh windows),
-// so 120 -> 90 -> 72 needs four bad windows in all, and nothing below 72.
+// Watches whether the game holds the display rate. It cannot do anything about a miss (the app does not
+// pick the rate), so after two consecutive 10 s windows under 90% of the display rate while focused it
+// says so exactly once per session; the caller logs a per-app rate recommendation. Windows only count
+// while worn, and restart on a focus change or when the display rate itself changes.
 class RefreshWatch {
   public:
     static constexpr double kWindowSeconds = 10.0;
     static constexpr double kMissFraction = 0.9;
-    static constexpr int kMissesBeforeStep = 2;
+    static constexpr int kMissesBeforeReport = 2;
 
-    RefreshDecision Frame(double nowSeconds, bool focused, float target, const float* rates, unsigned count);
+    // Once per XR frame. `displayHz` is DisplayRateHz(predictedDisplayPeriod); 0 means unknown (no counting).
+    RefreshAdvice Frame(double nowSeconds, bool focused, float displayHz);
 
-    // A new rate was requested (or the setting changed): measure from scratch.
+    // The session (re)began running: measure from scratch. A report already made stays made; a new
+    // RefreshWatch is the new-session reset.
     void Restart();
 
     int Misses() const { return misses_; }
+    bool Reported() const { return reported_; }
 
   private:
     bool started_ = false;
+    bool reported_ = false;
     bool windowFocused_ = false;
+    float windowHz_ = 0.0f;
     double windowStart_ = 0.0;
     long long frames_ = 0;
     int misses_ = 0;
