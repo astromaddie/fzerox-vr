@@ -491,15 +491,20 @@ edits all of these except `Stereo`, `WideCull` and `DisplayStandard`.
       dash crops) and one with the four dash crops cut out by the combine shader, which the cabin
       shows as its floating panel. The cabin used to float a crop of the left two-thirds, which cut
       off FINISH, the lap times and the place on the right (2026-10-05 wear).
-    - Annunciator pod: a block rising from the middle of the dash shelf, its face turned to the seat,
-      with two lamps: "CHECK ENGINE" (red, energy under 25%) on the left and "BOOST READY" (green,
-      while a boost is available and not running) on the right. Cabin geometry, unlit, coloured per
-      tick in `gdx_cabin_lamps`; the lettering is part of the lamp, built from a 5x7 font as one quad
-      per run of lit pixels (`gdx_cabin_emit_text`, from the generator's per-machine text frames, in
-      model units x64 under a 1/64 scale since a font pixel is a fifth of a unit): dark on a lit
-      lamp, pale on a dark one. Blinks are 1.5 Hz, 3 Hz when urgent (energy under 10%, a racer within
+    - Annunciator pod: a block rising from the middle of the dash shelf (cabin geometry), its face
+      turned to the seat, with two lamps: "CHECK ENGINE" (red, energy under 25%) on the left and
+      "BOOST READY" (green, while a boost is available and not running) on the right. The lamp faces
+      are quads at the table's float corners (`lampTile`, `gdx_vr_cabin_lamp`), cropped from a small
+      swapchain drawn once with the four faces (each unlit and lit, lettering in a 5x7 font, pale
+      on the dark face and dark on the lit one). State per tick from `gdx_cabin_lamps`
+      (`gGdxVrCabinLamp`); blinks are 1.5 Hz, 3 Hz when urgent (energy under 10%, a racer within
       1000). Replaced sill lamps with quad labels (2026-10-05 wear: out of view at speed, a 10 Hz
-      boost flash, 3-7.5 Hz blinking, labels drifting against the cabin).
+      boost flash, 3-7.5 Hz blinking, labels drifting against the cabin; the drift was the s15.16
+      eye projection, fixed above).
+      Two dead ends on the first Frame dump: the lamps as table triangles z-fought the pod face
+      (the table's whole-unit Vtx rounded their 0.12-unit lift away), and lamps plus lettering as
+      geometry in model units x64 under a 1/64 `guScale` drew nothing (most likely the bridge
+      dropping that RDRAM matrix; its `[mtx-dropped]` log only runs in real races).
     - Rear-view mirror (`CabinMirror`, on): a third world replay per tick from the cockpit anchor
       raised 4 model units above the canopy top (the cabin's bulkhead fills it otherwise), turned
       180 degrees, 60 x 20 degree FOV, 768x256, copied flipped left to right into its own swapchain

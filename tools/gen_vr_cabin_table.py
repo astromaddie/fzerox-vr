@@ -141,13 +141,13 @@ DASH_BOTTOM, DASH_RISE, DASH_LEAN_DEG, DASH_SHELF = -12.0, 18.0, 25.0, 10.0
 
 
 # The annunciator pod: a block rising from the middle of the dash shelf with two lamps on its face,
-# "CHECK ENGINE" (red, low energy) on the viewer's left and "BOOST READY" (green) on the right, the
-# text part of the lamp (the C side draws it from POD_TEXT). The face is turned to the seat so both
-# read at a glance without turning the head (wear feedback 2026-10-05: the sill lamps were too far
-# out to read at speed).
+# "CHECK ENGINE" (red, low energy) on the viewer's left and "BOOST READY" (green) on the right. The
+# face is turned to the seat so both read at a glance without turning the head (wear feedback
+# 2026-10-05: the sill lamps were too far out to read at speed). The lamp faces, lettering included,
+# are the VR host's quads at the corners emitted here (lampTile): Vtx whole units are too coarse
+# for them, and lettering as geometry needed a sub-unit scale matrix the gfx bridge dropped.
 POD_WIDTH, POD_HEIGHT, POD_DEPTH = 0.66, 4.2, 5.0  # width in cabin half-widths; model units
-POD_TEXT = ["CHECK ENGINE", "BOOST READY"]
-POD_TEXT_PX = len(max(POD_TEXT, key=len)) * 6 - 1  # 5x7 font, one column between letters
+POD_LAMP_LIFT = 0.3
 
 
 def facing_up(c, eye, x):
@@ -177,19 +177,17 @@ def pod_lamp(cab, seat, k):
     """Lamp k's centre (0: left, 1: right), width and height on the pod face."""
     face, x, y, n = pod_frame(cab, seat)
     pw = POD_WIDTH * cab["hw"]
-    c = tuple(face[i] + x[i] * (k - 0.5) * 0.5 * pw + n[i] * 0.12 for i in range(3))
+    # Just proud of the face (stored in whole units), so the quad sits on it with no visible gap.
+    c = tuple(face[i] + x[i] * (k - 0.5) * 0.5 * pw + n[i] * POD_LAMP_LIFT for i in range(3))
     return c, 0.47 * pw, 0.72 * POD_HEIGHT
 
 
-def pod_text(cab, seat, k):
-    """Origin (the text's top-left, just in front of the lamp) and the per-font-pixel steps right and
-    down, for the C side's lamp lettering."""
-    _, x, y, n = pod_frame(cab, seat)
-    c, w, _ = pod_lamp(cab, seat, k)
-    px = 0.84 * w / POD_TEXT_PX
-    tw = (len(POD_TEXT[k]) * 6 - 1) * px
-    o = tuple(c[i] - x[i] * tw / 2 + y[i] * 3.5 * px + n[i] * 0.15 for i in range(3))
-    return o, tuple(v * px for v in x), tuple(-v * px for v in y)
+def pod_lamp_corners(cab, seat, k):
+    """Lamp k's corners (top-left, top-right, bottom-right, bottom-left as the viewer sees it)."""
+    _, x, y, _ = pod_frame(cab, seat)
+    c, w, h = pod_lamp(cab, seat, k)
+    return [tuple(c[i] + x[i] * du + y[i] * dv for i in range(3))
+            for du, dv in ((-w / 2, h / 2), (w / 2, h / 2), (w / 2, -h / 2), (-w / 2, -h / 2))]
 
 
 def cabin_geometry(cab, generic, seat):
@@ -230,10 +228,7 @@ def cabin_geometry(cab, generic, seat):
     for sgn in (-1, 1):
         quad(out, P["DASH"], corner(face, sgn * pw / 2, h2), corner(face, sgn * pw / 2, h2, -POD_DEPTH),
              corner(face, sgn * pw / 2, -h2, -POD_DEPTH), corner(face, sgn * pw / 2, -h2))
-    for k, part in enumerate(("LAMP_ENERGY", "LAMP_BOOST")):
-        c, w, h = pod_lamp(cab, seat, k)
-        quad(out, P[part], corner(c, -w / 2, h / 2), corner(c, w / 2, h / 2), corner(c, w / 2, -h / 2),
-             corner(c, -w / 2, -h / 2))
+    # The lamp faces are the VR host's quads (lampTile), not triangles here.
     # LAMP_BEHIND has no geometry any more: the racer-behind warning is the mirror's own frame,
     # drawn by the VR host, so it can't drift out of line with the mirror.
     if generic:
@@ -310,11 +305,10 @@ def main():
             tris_out.append((part, a, b, c, n))
         for t in glass:  # every glass triangle is replaced: by GLASS_OWN, or by the generic frame
             cut_glass.append(tuple(round(sum(v[i] for v in t["v"]) / 3) for i in range(3)))
-        text = []
-        for k in range(len(POD_TEXT)):
-            o, dx, dy = pod_text(cab, seat, k)
-            text.append(((o[0] + cab["cx"], o[1], o[2]), dx, dy))
-        machines.append({"name": name, "kind": 1 if single else 2, "cab": cab, "seat": seat, "text": text,
+        tiles = []
+        for k in range(2):
+            tiles.append([(v[0] + cab["cx"], v[1], v[2]) for v in pod_lamp_corners(cab, seat, k)])
+        machines.append({"name": name, "kind": 1 if single else 2, "cab": cab, "seat": seat, "tiles": tiles,
                          "tri": (tri_start, len(tris_out) - tri_start),
                          "glass": (glass_start, len(cut_glass) - glass_start), "rgb": glass_rgb})
 
@@ -347,13 +341,10 @@ def main():
         "    unsigned char glassRgb[3];",
         "    short dash[3];      /* centre of the dash face, which leans back 25 degrees from vertical */",
         "    short dashHalfWidth;",
-        "    /* lamp lettering (kGdxCabinLampText), per lamp: the text's top-left, then one font pixel",
-        "       to the right and one down */",
-        "    float lampText[2][3][3];",
+        "    /* the pod lamps (0: CHECK ENGINE, 1: BOOST READY), drawn by the VR host as quads: corners,",
+        "       top-left first, clockwise as the viewer sees them */",
+        "    float lampTile[2][4][3];",
         "} GdxCabinMachine;",
-        "",
-        "/* The pod lamps' text, LAMP_ENERGY first, in the 5x7 font the C side carries. */",
-        "static const char* const kGdxCabinLampText[2] = { " + ", ".join(f'\"{t}\"' for t in POD_TEXT) + " };",
         "",
         f"#define GDX_CABIN_MACHINE_COUNT {len(machines)} /* sMachineDrawFuncs order: 30 pilots, then super machines */",
         "static const GdxCabinMachine kGdxCabinMachines[GDX_CABIN_MACHINE_COUNT] = {",
@@ -366,8 +357,9 @@ def main():
                      f"{{ {', '.join(map(str, mc['rgb']))} }}, "
                      f"{{ {r(c['cx'])}, {r(c['sill'] + DASH_BOTTOM + DASH_RISE / 2)}, "
                      f"{r(c['z1'] - 0.35 * (c['z1'] - c['z0']) + DASH_RISE / 2 * math.tan(math.radians(DASH_LEAN_DEG)))} }}, "
-                     f"{r(c['hw'])}, {{ " + ", ".join("{ " + ", ".join("{ " + ", ".join(f"{v:.3f}f" for v in vec) + " }"
-                                                             for vec in t) + " }" for t in mc["text"]) + f" }} }}, /* {mc['name']} */")
+                     f"{r(c['hw'])}, {{ "
+                     + ", ".join("{ " + ", ".join("{ " + ", ".join(f"{v:.3f}f" for v in vec) + " }" for vec in t) + " }"
+                                 for t in mc["tiles"]) + f" }} }}, /* {mc['name']} */")
     lines += ["};", "", f"static const GdxCabinTri kGdxCabinTris[{len(tris_out)}] = {{"]
     for part, a, b, c, n in tris_out:
         vs = ", ".join("{ " + ", ".join(str(r(x)) for x in v) + " }" for v in (a, b, c))

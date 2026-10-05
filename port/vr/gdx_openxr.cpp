@@ -60,6 +60,7 @@ extern "C" int gGdxVrCabinActive;
 extern "C" int gdx_vr_cabin_seat(int machine, float seat[3]);
 extern "C" int gdx_vr_cabin_cut(int machine, float box[6], const short** glass, int* glassCount);
 extern "C" int gdx_vr_cabin_dash(int machine, float centre[3], float* halfWidth);
+extern "C" int gdx_vr_cabin_lamp(int machine, int k, float corners[4][3]);
 extern "C" int gGdxVrCabinLamp[3]; // this tick's lamps: 0 low energy (blinking), 1 racer behind, 2 boost
 // port/decomp_port.c: camera 0's track up (the game's smoothed gravity-up for the followed racer).
 extern "C" void gdx_vr_camera_track_up(float out[3]);
@@ -110,6 +111,8 @@ constexpr float kBeamWidth = 0.006f;    // metres: the menu pointer's laser
 constexpr int32_t kMirrorWidth = 768;   // cabin rear-view mirror image, 3:1
 constexpr int32_t kMirrorHeight = 256;
 constexpr int32_t kMirrorFramePx = 14; // the mirror's bezel, in mirror image pixels
+constexpr int32_t kLampWidth = 300;      // the pod lamp faces: 4 rows (CHECK ENGINE off/on, BOOST READY
+constexpr int32_t kLampHeight = 60;      // off/on), 5:1 like the pod's lamps
 constexpr float kBeamMissLength = 1.5f; // metres: laser length when it is off the menu
 // Race HUD: head-locked in VIEW space 1.5 m ahead, gEnhancements.VR.HudHeight metres tall (default
 // 1.2, about 44 degrees) at gEnhancements.VR.HudAspect (default 1.5:1, about 62 degrees wide). The
@@ -245,6 +248,7 @@ struct State {
     Swapchain hud;
     Swapchain beam; // solid-colour texture for the menu pointer's laser quad
     Swapchain mirror; // cabin rear-view mirror image
+    Swapchain lamps;  // the cabin pod's lamp faces, drawn once at session start
     long long mirrorRenderedTick = -1;
     // Cabin dash HUD: the followed machine's body frame (its pos relative to the cockpit anchor's
     // origin) and the cockpit eye anchor of the frame being built (world units), set while the
@@ -572,6 +576,7 @@ void DestroySession() {
     DestroySwapchain(s.hud);
     DestroySwapchain(s.beam);
     DestroySwapchain(s.mirror);
+    DestroySwapchain(s.lamps);
     if (s.localSpace != XR_NULL_HANDLE) {
         xrDestroySpace(s.localSpace);
         s.localSpace = XR_NULL_HANDLE;
@@ -752,6 +757,7 @@ void FlushHaptics() {
 }
 
 void FillSwapchain(Swapchain& sc, float r, float g, float b, float a);
+void FillLampSwapchain(Swapchain& sc);
 Pose FlatQuadPose();
 float FlatQuadHeight();
 
@@ -1226,6 +1232,9 @@ bool CreateEverything() {
         FillSwapchain(s.beam, 0.55f, 0.85f, 1.0f, 0.9f);
     }
     CreateSwapchain(s.mirror, kMirrorWidth, kMirrorHeight, "xrCreateSwapchain(cabin mirror)");
+    if (CreateSwapchain(s.lamps, kLampWidth, kLampHeight * 4, "xrCreateSwapchain(cabin lamps)")) {
+        FillLampSwapchain(s.lamps);
+    }
     if (!CreateInput()) {
         gdx_port_logf("[openxr] controller actions unavailable; relying on SDL/Steam Input\n");
     }
@@ -1756,6 +1765,100 @@ void FillSwapchain(Swapchain& sc, float r, float g, float b, float a) {
     }
 }
 
+// 5x7 pixel font, just the letters the cabin pod's lamps use; each row is 5 bits, MSB on the left.
+struct Glyph {
+    char c;
+    uint8_t rows[7];
+};
+constexpr Glyph kLampFont[] = {
+    { 'A', { 0x0E, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11 } }, { 'B', { 0x1E, 0x11, 0x11, 0x1E, 0x11, 0x11, 0x1E } },
+    { 'C', { 0x0E, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0E } }, { 'D', { 0x1E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1E } },
+    { 'E', { 0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x1F } }, { 'G', { 0x0E, 0x11, 0x10, 0x17, 0x11, 0x11, 0x0F } },
+    { 'H', { 0x11, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11 } }, { 'I', { 0x0E, 0x04, 0x04, 0x04, 0x04, 0x04, 0x0E } },
+    { 'K', { 0x11, 0x12, 0x14, 0x18, 0x14, 0x12, 0x11 } }, { 'N', { 0x11, 0x19, 0x15, 0x13, 0x11, 0x11, 0x11 } },
+    { 'O', { 0x0E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E } }, { 'R', { 0x1E, 0x11, 0x11, 0x1E, 0x14, 0x12, 0x11 } },
+    { 'S', { 0x0F, 0x10, 0x10, 0x0E, 0x01, 0x01, 0x1E } }, { 'T', { 0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04 } },
+    { 'Y', { 0x11, 0x11, 0x0A, 0x04, 0x04, 0x04, 0x04 } },
+};
+constexpr int kLampScale = 4;                // font pixels -> texels
+constexpr int kLampAdvance = 6 * kLampScale; // 5 wide plus a gap
+const char* const kLampText[2] = { "CHECK ENGINE", "BOOST READY" };
+// Per lamp: the face unlit, then lit; lettering pale on the dark face, dark on the lit one, so it
+// always reads.
+const uint8_t kLampFace[2][2][3] = { { { 56, 12, 10 }, { 255, 50, 40 } }, { { 12, 54, 20 }, { 70, 255, 100 } } };
+const uint8_t kLampInk[2][3] = { { 118, 118, 124 }, { 24, 18, 16 } };
+
+// Draw the four lamp faces (row 2 * lamp + lit) into every image of `sc` (static: a layer keeps
+// showing the last released image). Row 0 is the top of the picture; GL images are bottom-up.
+void FillLampSwapchain(Swapchain& sc) {
+    std::vector<uint8_t> px((size_t)sc.width * (size_t)sc.height * 4u, 0);
+    for (int row = 0; row < 4; row++) {
+        const int lamp = row / 2, lit = row % 2;
+        auto put = [&](int x, int yTop, const uint8_t rgb[3]) {
+            const int y = sc.height - 1 - (row * kLampHeight + yTop);
+            uint8_t* p = &px[((size_t)y * (size_t)sc.width + (size_t)x) * 4u];
+            p[0] = rgb[0];
+            p[1] = rgb[1];
+            p[2] = rgb[2];
+            p[3] = 255;
+        };
+        for (int y = 0; y < kLampHeight; y++) {
+            for (int x = 0; x < kLampWidth; x++) {
+                put(x, y, kLampFace[lamp][lit]);
+            }
+        }
+        const char* text = kLampText[lamp];
+        const int textW = (int)std::strlen(text) * kLampAdvance - kLampScale;
+        const int x0 = (kLampWidth - textW) / 2;
+        const int y0 = (kLampHeight - 7 * kLampScale) / 2;
+        for (int i = 0; text[i] != '\0'; i++) {
+            const Glyph* g = nullptr;
+            for (const Glyph& f : kLampFont) {
+                if (f.c == text[i]) {
+                    g = &f;
+                }
+            }
+            if (g == nullptr) {
+                continue; // space
+            }
+            for (int gy = 0; gy < 7; gy++) {
+                for (int gx = 0; gx < 5; gx++) {
+                    if ((g->rows[gy] >> (4 - gx) & 1) == 0) {
+                        continue;
+                    }
+                    for (int sy = 0; sy < kLampScale; sy++) {
+                        for (int sx = 0; sx < kLampScale; sx++) {
+                            put(x0 + i * kLampAdvance + gx * kLampScale + sx, y0 + gy * kLampScale + sy,
+                                kLampInk[lit]);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for (size_t i = 0; i < sc.images.size(); i++) {
+        uint32_t index = 0;
+        XrSwapchainImageAcquireInfo ai{ XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO };
+        if (!Check(xrAcquireSwapchainImage(sc.handle, &ai, &index), "xrAcquireSwapchainImage(lamps)")) {
+            return;
+        }
+        XrSwapchainImageWaitInfo wi{ XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO };
+        wi.timeout = XR_INFINITE_DURATION;
+        if (!Check(xrWaitSwapchainImage(sc.handle, &wi), "xrWaitSwapchainImage(lamps)")) {
+            return;
+        }
+        GLint prev = 0;
+        glGetIntegerv(GL_TEXTURE_BINDING_2D, &prev);
+        glBindTexture(GL_TEXTURE_2D, sc.images[index].image);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, sc.width, sc.height, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+        glBindTexture(GL_TEXTURE_2D, (GLuint)prev);
+        XrSwapchainImageReleaseInfo ri{ XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
+        if (Check(xrReleaseSwapchainImage(sc.handle, &ri), "xrReleaseSwapchainImage(lamps)")) {
+            sc.hasImage = true;
+        }
+    }
+}
+
 // --- Flat mode ---------------------------------------------------------------------------------
 
 // The flat quad (menus, flat game screens): kQuadDistance ahead of where the viewer faced at the
@@ -2129,6 +2232,37 @@ bool AddCabinHudLayers(XrCompositionLayerQuad* parts, const XrCompositionLayerBa
     HudFloatingMasked(&parts[kDashPanelCount]);
     for (int i = 0; i <= kDashPanelCount; i++) {
         layers[(*count)++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&parts[i]);
+    }
+    // The pod lamps: their faces, lettering included, as quads at the table's corners, lit or not
+    // per gGdxVrCabinLamp (0: CHECK ENGINE, 2: BOOST READY).
+    for (int k = 0; k < 2 && s.lamps.hasImage; k++) {
+        float c4[4][3];
+        if (gdx_vr_cabin_lamp(s.cockpitBody.machine, k, c4) == 0) {
+            break;
+        }
+        float c[3], x[3], y[3];
+        for (int j = 0; j < 3; j++) {
+            c[j] = 0.25f * (c4[0][j] + c4[1][j] + c4[2][j] + c4[3][j]);
+            x[j] = c4[1][j] - c4[0][j];
+            y[j] = c4[0][j] - c4[3][j];
+        }
+        const float w = std::sqrt(x[0] * x[0] + x[1] * x[1] + x[2] * x[2]);
+        const float h = std::sqrt(y[0] * y[0] + y[1] * y[1] + y[2] * y[2]);
+        if (w < 1e-3f || h < 1e-3f) {
+            continue;
+        }
+        for (int j = 0; j < 3; j++) {
+            x[j] /= w;
+            y[j] /= h;
+        }
+        XrCompositionLayerQuad& q = parts[kDashPanelCount + 2 + k];
+        PlaceOnBody(&q, c, x, y, w, h);
+        q.layerFlags = 0;
+        const int lit = gGdxVrCabinLamp[k == 0 ? 0 : 2] != 0 ? 1 : 0;
+        const int row = 2 * k + lit; // from the top of the picture; GL rows count from the bottom
+        q.subImage.swapchain = s.lamps.handle;
+        q.subImage.imageRect = { { 0, s.lamps.height - (row + 1) * kLampHeight }, { kLampWidth, kLampHeight } };
+        layers[(*count)++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&q);
     }
     // Rear-view mirror.
     float box[6];
@@ -2623,7 +2757,7 @@ void PresentStereoTick(const StereoCallbacks& cb) {
                                                           { XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW } };
         XrCompositionLayerProjection layer{ XR_TYPE_COMPOSITION_LAYER_PROJECTION };
         XrCompositionLayerQuad hudLayer{ XR_TYPE_COMPOSITION_LAYER_QUAD };
-        XrCompositionLayerQuad hudParts[kDashPanelCount + 2]; // dash panels, floating HUD, mirror
+        XrCompositionLayerQuad hudParts[kDashPanelCount + 4]; // dash panels, floating HUD, mirror, lamps
         for (XrCompositionLayerQuad& q : hudParts) {
             q = XrCompositionLayerQuad{ XR_TYPE_COMPOSITION_LAYER_QUAD };
         }

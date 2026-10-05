@@ -1842,19 +1842,6 @@ extern char* getenv(const char* name);
    command buffer is registered as a PORT-format (16-byte) list range. */
 static Vtx* sGdxCabinVtx = NULL;
 static Gfx* sGdxCabinGfx = NULL;
-#define GDX_CABIN_LAMPS 3
-#define GDX_CABIN_LAMP_GFX 16
-static Gfx* sGdxCabinLampGfx = NULL; /* GDX_CABIN_LAMPS sub-lists of GDX_CABIN_LAMP_GFX commands */
-/* The pod lamps' lettering (kGdxCabinLampText), built per machine from the table's text frames: one
-   quad per run of lit font pixels, in model units x GDX_CABIN_TEXT_SCALE (a font pixel is about a
-   fifth of a unit, below what Vtx shorts can place), drawn under a 1 / GDX_CABIN_TEXT_SCALE scale. */
-#define GDX_CABIN_TEXT_LAMPS 2
-#define GDX_CABIN_TEXT_MAX_RUNS 160 /* per lamp; "CHECK ENGINE" has 113 */
-#define GDX_CABIN_TEXT_GFX (GDX_CABIN_TEXT_MAX_RUNS * 2 + GDX_CABIN_TEXT_MAX_RUNS / 15 + 4)
-#define GDX_CABIN_TEXT_SCALE 64.0f
-static Vtx* sGdxCabinTextVtx = NULL;
-static Gfx* sGdxCabinTextGfx = NULL; /* GDX_CABIN_TEXT_LAMPS sub-lists of GDX_CABIN_TEXT_GFX commands */
-static Mtx* sGdxCabinTextMtx = NULL;
 static s32 sGdxCabinBuiltFor = -1; /* machine | body colour, packed; -1: nothing built */
 
 static const u8 kGdxCabinPartRgb[GDX_CABIN_PART_COUNT][3] = {
@@ -1929,104 +1916,6 @@ static Gfx* gdx_cabin_emit_part(Gfx* g, s32* vtxUsed, const GdxCabinMachine* m, 
     return g;
 }
 
-/* 5x7 capitals for the lamp lettering (bit 4 is the leftmost column), the VR host's label font. */
-typedef struct GdxCabinGlyph {
-    char c;
-    u8 rows[7];
-} GdxCabinGlyph;
-static const GdxCabinGlyph kGdxCabinFont[] = {
-    { 'A', { 0x0E, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11 } }, { 'B', { 0x1E, 0x11, 0x11, 0x1E, 0x11, 0x11, 0x1E } },
-    { 'C', { 0x0E, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0E } }, { 'D', { 0x1E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1E } },
-    { 'E', { 0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x1F } }, { 'G', { 0x0E, 0x11, 0x10, 0x17, 0x11, 0x11, 0x0F } },
-    { 'H', { 0x11, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11 } }, { 'I', { 0x0E, 0x04, 0x04, 0x04, 0x04, 0x04, 0x0E } },
-    { 'K', { 0x11, 0x12, 0x14, 0x18, 0x14, 0x12, 0x11 } }, { 'N', { 0x11, 0x19, 0x15, 0x13, 0x11, 0x11, 0x11 } },
-    { 'O', { 0x0E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E } }, { 'R', { 0x1E, 0x11, 0x11, 0x1E, 0x14, 0x12, 0x11 } },
-    { 'S', { 0x0F, 0x10, 0x10, 0x0E, 0x01, 0x01, 0x1E } }, { 'T', { 0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04 } },
-    { 'Y', { 0x11, 0x11, 0x0A, 0x04, 0x04, 0x04, 0x04 } },
-};
-
-static const u8* gdx_cabin_glyph(char c) {
-    u32 i;
-    for (i = 0; i < sizeof(kGdxCabinFont) / sizeof(kGdxCabinFont[0]); i++) {
-        if (kGdxCabinFont[i].c == c) {
-            return kGdxCabinFont[i].rows;
-        }
-    }
-    return NULL; /* space */
-}
-
-static void gdx_cabin_text_vtx(Vtx* v, const float f[3][3], s32 px, s32 py) {
-    s32 i;
-    for (i = 0; i < 3; i++) {
-        const f32 p = f[0][i] + f[1][i] * (f32)px + f[2][i] * (f32)py;
-        v->n.ob[i] = (s16)(p * GDX_CABIN_TEXT_SCALE + (p >= 0.0f ? 0.5f : -0.5f));
-    }
-    v->n.flag = 0;
-    v->n.tc[0] = 0;
-    v->n.tc[1] = 0;
-    v->n.n[0] = 0;
-    v->n.n[1] = 127;
-    v->n.n[2] = 0;
-    v->n.a = 255;
-}
-
-/* `text` as quads (one per horizontal run of lit font pixels), both sides, under the text scale.
-   f: top-left of the text, one font pixel right, one down (model units). */
-static void gdx_cabin_emit_text(Gfx* g, Vtx* vtx, const char* text, const float f[3][3]) {
-    s32 runs = 0;
-    s32 batch = 0;
-    s32 ch, row, k;
-    Vtx* base = vtx;
-
-    gSPMatrix(g++, sGdxCabinTextMtx, G_MTX_MODELVIEW | G_MTX_MUL | G_MTX_PUSH);
-    for (ch = 0; text[ch] != '\0'; ch++) {
-        const u8* glyph = gdx_cabin_glyph(text[ch]);
-        if (glyph == NULL) {
-            continue;
-        }
-        for (row = 0; row < 7; row++) {
-            s32 col = 0;
-            while (col < 5) {
-                s32 c0;
-                if (!((glyph[row] >> (4 - col)) & 1)) {
-                    col++;
-                    continue;
-                }
-                c0 = col;
-                while (col < 5 && ((glyph[row] >> (4 - col)) & 1)) {
-                    col++;
-                }
-                if (runs == GDX_CABIN_TEXT_MAX_RUNS) {
-                    break;
-                }
-                gdx_cabin_text_vtx(&base[batch * 4 + 0], f, ch * 6 + c0, row);
-                gdx_cabin_text_vtx(&base[batch * 4 + 1], f, ch * 6 + col, row);
-                gdx_cabin_text_vtx(&base[batch * 4 + 2], f, ch * 6 + col, row + 1);
-                gdx_cabin_text_vtx(&base[batch * 4 + 3], f, ch * 6 + c0, row + 1);
-                runs++;
-                if (++batch == 15) {
-                    gSPVertex(g++, base, 60, 0);
-                    for (k = 0; k < 15; k++) {
-                        gSP2Triangles(g++, k * 4, k * 4 + 1, k * 4 + 2, 0, k * 4, k * 4 + 2, k * 4 + 3, 0);
-                        gSP2Triangles(g++, k * 4, k * 4 + 2, k * 4 + 1, 0, k * 4, k * 4 + 3, k * 4 + 2, 0);
-                    }
-                    base += 60;
-                    batch = 0;
-                }
-            }
-        }
-    }
-    if (batch > 0) {
-        gSPVertex(g++, base, batch * 4, 0);
-        for (k = 0; k < batch; k++) {
-            gSP2Triangles(g++, k * 4, k * 4 + 1, k * 4 + 2, 0, k * 4, k * 4 + 2, k * 4 + 3, 0);
-            gSP2Triangles(g++, k * 4, k * 4 + 2, k * 4 + 1, 0, k * 4, k * 4 + 3, k * 4 + 2, 0);
-        }
-    }
-    gSPPopMatrix(g++, G_MTX_MODELVIEW);
-    gSPEndDisplayList(g++);
-}
-
 static Gfx* gdx_cabin_dl(s32 machine, u8 bodyR, u8 bodyG, u8 bodyB) {
     const s32 key = (machine << 24) | (bodyR << 16) | (bodyG << 8) | bodyB;
     const GdxCabinMachine* m = &kGdxCabinMachines[machine];
@@ -2037,18 +1926,10 @@ static Gfx* gdx_cabin_dl(s32 machine, u8 bodyR, u8 bodyG, u8 bodyB) {
     if (sGdxCabinVtx == NULL) {
         sGdxCabinVtx = (Vtx*)gdx_rdram_persist_alloc_raw(sizeof(Vtx) * GDX_CABIN_MAX_TRIS * 6, 16);
         sGdxCabinGfx = (Gfx*)gdx_rdram_persist_alloc_raw(sizeof(Gfx) * (GDX_CABIN_MAX_TRIS + 64), 16);
-        sGdxCabinLampGfx = (Gfx*)gdx_rdram_persist_alloc_raw(sizeof(Gfx) * GDX_CABIN_LAMPS * GDX_CABIN_LAMP_GFX, 16);
-        gdx_register_host_wide_command_range(sGdxCabinLampGfx, sizeof(Gfx) * GDX_CABIN_LAMPS * GDX_CABIN_LAMP_GFX);
         /* RDRAM is read as raw N64 data (8-byte big-endian commands) unless registered as holding
            PORT-format (16-byte) lists like this one. The vertices stay unregistered: RDRAM
            vertices are read natively. */
         gdx_register_host_wide_command_range(sGdxCabinGfx, sizeof(Gfx) * (GDX_CABIN_MAX_TRIS + 64));
-        sGdxCabinTextVtx =
-            (Vtx*)gdx_rdram_persist_alloc_raw(sizeof(Vtx) * GDX_CABIN_TEXT_LAMPS * GDX_CABIN_TEXT_MAX_RUNS * 4, 16);
-        sGdxCabinTextGfx = (Gfx*)gdx_rdram_persist_alloc_raw(sizeof(Gfx) * GDX_CABIN_TEXT_LAMPS * GDX_CABIN_TEXT_GFX, 16);
-        gdx_register_host_wide_command_range(sGdxCabinTextGfx, sizeof(Gfx) * GDX_CABIN_TEXT_LAMPS * GDX_CABIN_TEXT_GFX);
-        sGdxCabinTextMtx = (Mtx*)gdx_rdram_persist_alloc_raw(sizeof(Mtx), 16);
-        guScale(sGdxCabinTextMtx, 1.0f / GDX_CABIN_TEXT_SCALE, 1.0f / GDX_CABIN_TEXT_SCALE, 1.0f / GDX_CABIN_TEXT_SCALE);
     }
     if (key == sGdxCabinBuiltFor) {
         return sGdxCabinGfx;
@@ -2083,65 +1964,29 @@ static Gfx* gdx_cabin_dl(s32 machine, u8 bodyR, u8 bodyG, u8 bodyB) {
         g = gdx_cabin_emit_part(g, &vtxUsed, m, GDX_CABIN_PART_GLASS_GENERIC);
     }
     gSPEndDisplayList(g++);
-    for (part = 0; part < GDX_CABIN_LAMPS; part++) {
-        Gfx* lg = &sGdxCabinLampGfx[part * GDX_CABIN_LAMP_GFX];
-        lg = gdx_cabin_emit_part(lg, &vtxUsed, m, GDX_CABIN_PART_LAMP_ENERGY + part);
-        gSPEndDisplayList(lg++);
-    }
-    for (part = 0; part < GDX_CABIN_TEXT_LAMPS; part++) {
-        gdx_cabin_emit_text(&sGdxCabinTextGfx[part * GDX_CABIN_TEXT_GFX],
-                            &sGdxCabinTextVtx[part * GDX_CABIN_TEXT_MAX_RUNS * 4], kGdxCabinLampText[part],
-                            m->lampText[part]);
-    }
     sGdxCabinBuiltFor = key;
     return sGdxCabinGfx;
 }
 
-/* The lamps' state this tick (0 off, 1 on, already blinking): index 0 low energy ("CHECK ENGINE"),
-   1 racer behind (the VR host's amber mirror frame), 2 boost ("BOOST READY"). */
+/* The cabin warnings' state this tick (0 off, 1 on, already blinking), shown by the VR host: index 0
+   low energy (the pod's "CHECK ENGINE" lamp), 1 racer behind (the mirror's amber frame), 2 boost
+   (the pod's "BOOST READY" lamp). */
 int gGdxVrCabinLamp[3] = { 0, 0, 0 };
 
-/* The annunciator pod from the racer's state: CHECK ENGINE (red) blinks under 25% energy, BOOST READY
-   (green) is steady while a boost is available and not running. The racer-behind state blinks the
-   mirror frame. Blinks are slow, 1.5 Hz, and 3 Hz when urgent (under 10% energy, a racer within
-   1000): wear feedback 2026-10-05 found 3-7.5 Hz blinking and a 10 Hz boost flash distracting.
-   Unlit, so they glow; lettering dark on a lit lamp and pale on a dark one, so it always reads. */
-static Gfx* gdx_cabin_lamps(Gfx* gfx, const Racer* racer) {
+/* From the racer's state: CHECK ENGINE blinks under 25% energy, BOOST READY is steady while a boost
+   is available and not running, the mirror frame blinks while a racer is within the game's CHECK
+   distance. Blinks are slow, 1.5 Hz, and 3 Hz when urgent (under 10% energy, a racer within 1000):
+   wear feedback 2026-10-05 found 3-7.5 Hz blinking and a 10 Hz boost flash distracting. The lamp
+   faces are quads on the pod (gdx_openxr.cpp), so their lettering is a texture. */
+static void gdx_cabin_lamps(const Racer* racer) {
     static u32 sTick = 0;
     const f32 energy = (racer->maxEnergy > 0.0f) ? racer->energy / racer->maxEnergy : 1.0f;
     const f32 behind = racer->distanceFromRacerBehind;
-    u8 rgb[GDX_CABIN_LAMPS][3];
-    s32 on[GDX_CABIN_LAMPS];
-    s32 i;
 
     sTick++;
-    on[0] = (energy < 0.25f) && ((sTick / ((energy < 0.1f) ? 10 : 20)) % 2 == 0);
-    on[1] = (behind < 3000.0f) && ((sTick / ((behind < 1000.0f) ? 10 : 20)) % 2 == 0);
-    on[2] = (racer->stateFlags & RACER_STATE_CAN_BOOST) && racer->energy != 0.0f && racer->boostTimer == 0;
-    rgb[0][0] = on[0] ? 255 : 56; rgb[0][1] = on[0] ? 50 : 12;  rgb[0][2] = on[0] ? 40 : 10;
-    rgb[1][0] = on[1] ? 255 : 60; rgb[1][1] = on[1] ? 170 : 40; rgb[1][2] = on[1] ? 20 : 8;
-    rgb[2][0] = on[2] ? 70 : 12;  rgb[2][1] = on[2] ? 255 : 54; rgb[2][2] = on[2] ? 100 : 20;
-
-    for (i = 0; i < GDX_CABIN_LAMPS; i++) {
-        gGdxVrCabinLamp[i] = on[i] ? 1 : 0;
-    }
-    gDPPipeSync(gfx++);
-    gDPSetCombineLERP(gfx++, 0, 0, 0, PRIMITIVE, 0, 0, 0, PRIMITIVE, 0, 0, 0, COMBINED, 0, 0, 0, COMBINED);
-    for (i = 0; i < GDX_CABIN_LAMPS; i++) {
-        const s32 text = (i == 0) ? 0 : (i == 2) ? 1 : -1;
-        if (text < 0) {
-            continue; /* no lamp: the mirror frame */
-        }
-        gDPSetPrimColor(gfx++, 0, 0, rgb[i][0], rgb[i][1], rgb[i][2], 255);
-        gSPDisplayList(gfx++, &sGdxCabinLampGfx[i * GDX_CABIN_LAMP_GFX]);
-        if (on[i]) {
-            gDPSetPrimColor(gfx++, 0, 0, 24, 18, 16, 255);
-        } else {
-            gDPSetPrimColor(gfx++, 0, 0, 118, 118, 124, 255);
-        }
-        gSPDisplayList(gfx++, &sGdxCabinTextGfx[text * GDX_CABIN_TEXT_GFX]);
-    }
-    return gfx;
+    gGdxVrCabinLamp[0] = (energy < 0.25f) && ((sTick / ((energy < 0.1f) ? 10 : 20)) % 2 == 0);
+    gGdxVrCabinLamp[1] = (behind < 3000.0f) && ((sTick / ((behind < 1000.0f) ? 10 : 20)) % 2 == 0);
+    gGdxVrCabinLamp[2] = (racer->stateFlags & RACER_STATE_CAN_BOOST) && racer->energy != 0.0f && racer->boostTimer == 0;
 }
 
 /* The stock model whose cabin the followed racer is drawn with this tick (the cabin cockpit is on
@@ -2231,7 +2076,7 @@ s32 gdx_vr_cabin_begin(Gfx** gfx, const Racer* racer) {
 Gfx* gdx_vr_cabin_end(Gfx* gfx, const Racer* racer, s32 machine, Gfx* setupDl) {
     gDma0p(gfx++, G_NOOP, 0, (0x5C << 16));
     gSPDisplayList(gfx++, gdx_cabin_dl(machine, racer->bodyR, racer->bodyG, racer->bodyB));
-    gfx = gdx_cabin_lamps(gfx, racer);
+    gdx_cabin_lamps(racer);
     gSPDisplayList(gfx++, setupDl);
     return gfx;
 }
@@ -2245,6 +2090,21 @@ int gdx_vr_cabin_seat(int machine, float seat[3]) {
     seat[0] = kGdxCabinMachines[machine].seat[0];
     seat[1] = kGdxCabinMachines[machine].seat[1];
     seat[2] = kGdxCabinMachines[machine].seat[2];
+    return 1;
+}
+
+/* Pod lamp k's corners (0: CHECK ENGINE, 1: BOOST READY; top-left first, clockwise as the viewer
+   sees them), model units, for the VR host's lamp quads: 0 when the machine has no cabin data. */
+int gdx_vr_cabin_lamp(int machine, int k, float corners[4][3]) {
+    int i, j;
+    if (machine < 0 || machine >= GDX_CABIN_MACHINE_COUNT || k < 0 || k > 1) {
+        return 0;
+    }
+    for (i = 0; i < 4; i++) {
+        for (j = 0; j < 3; j++) {
+            corners[i][j] = kGdxCabinMachines[machine].lampTile[k][i][j];
+        }
+    }
     return 1;
 }
 
