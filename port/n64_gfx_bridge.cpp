@@ -3496,7 +3496,8 @@ class N64DisplayListAdapter {
             float bodyRel[3], bs[3], bu[3], bf[3];
             bool bodyFrameOk = false;
             float seat[3], seatForward = 0.0f, seatUp = 0.0f;
-            if (gdx_vr::CabinEyeOffsets(gGdxVrVehMachine, seat, &seatForward, &seatUp)) {
+            const bool inCabin = gdx_vr::CabinEyeOffsets(gGdxVrVehMachine, seat, &seatForward, &seatUp);
+            if (inCabin) {
                 // Inside the cabin the eye is the model matrix applied to the seat, the very matrix
                 // the cabin and hull are drawn with, and the view takes the body's frame whole
                 // (CockpitTilt is the roof view's): sitting in the machine, nothing of it may move
@@ -3644,7 +3645,12 @@ class N64DisplayListAdapter {
                 const char* e = std::getenv("GDX_VR_COCKPIT_FAR_SCALE");
                 return (e != nullptr && e[0] != '\0') ? std::strtof(e, nullptr) : 4.0f;
             }();
-            const float nearZ = sDiagNear > 0.0f ? sDiagNear : ((pose.nearZ > 2.0f) ? 2.0f : pose.nearZ);
+            // In the cabin the canopy is ~1.3 units over the eye and the near plane cut its top off
+            // (wear feedback 2026-10-05), so the cabin's is 0.5. The far-plane margin above was
+            // s15.16 rounding, which the camera-relative eye projection no longer has.
+            const float cockpitNear = inCabin ? 0.5f : 2.0f;
+            const float nearZ =
+                sDiagNear > 0.0f ? sDiagNear : ((pose.nearZ > cockpitNear) ? cockpitNear : pose.nearZ);
             const float farZ = pose.farZ * (sDiagFarScale > 0.0f ? sDiagFarScale : 4.0f);
             if (pose.farZ > pose.nearZ && farZ > nearZ && pose.nearZ > 0.0f && nearZ > 0.0f) {
                 const float aGame = (pose.farZ + pose.nearZ) / (pose.farZ - pose.nearZ);

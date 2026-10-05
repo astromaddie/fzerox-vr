@@ -140,20 +140,59 @@ def quad(out, part, a, b, c, d):
 DASH_BOTTOM, DASH_RISE, DASH_LEAN_DEG, DASH_SHELF = -12.0, 18.0, 25.0, 10.0
 
 
-def sill_lamp_frame(cab, side):
-    """Centre, text axis (the viewer's right) and up axis of a sill lamp; side +1 = the viewer's left."""
+# The annunciator pod: a block rising from the middle of the dash shelf with two lamps on its face,
+# "CHECK ENGINE" (red, low energy) on the viewer's left and "BOOST READY" (green) on the right, the
+# text part of the lamp (the C side draws it from POD_TEXT). The face is turned to the seat so both
+# read at a glance without turning the head (wear feedback 2026-10-05: the sill lamps were too far
+# out to read at speed).
+POD_WIDTH, POD_HEIGHT, POD_DEPTH = 0.66, 4.2, 5.0  # width in cabin half-widths; model units
+POD_TEXT = ["CHECK ENGINE", "BOOST READY"]
+POD_TEXT_PX = len(max(POD_TEXT, key=len)) * 6 - 1  # 5x7 font, one column between letters
+
+
+def facing_up(c, eye, x):
+    """Unit up axis of a panel at c with text axis x, its face turned toward the eye."""
+    n = unit(sub(eye, c))
+    y = unit(cross(n, x))
+    return y if y[1] >= 0 else tuple(-v for v in y)
+
+
+def pod_frame(cab, seat):
+    """Centre of the pod face, its text axis (the viewer's right), up axis and normal (toward the
+    seat). Centred on the cabin axis: cabin_geometry's output is shifted by cx afterwards."""
     hw, sill, z0, z1 = cab["hw"], cab["sill"], cab["z0"], cab["z1"]
     zd = z1 - 0.35 * (z1 - z0)
-    tilt = (-side * 0.45, 0.9, 0.0)
-    n = math.sqrt(tilt[0] ** 2 + tilt[1] ** 2)
-    tilt = (tilt[0] / n, tilt[1] / n, 0.0)
-    along = (0.0, 0.0, float(side))  # facing the centreline: forward on the left sill, back on the right
-    # Centred on the cabin axis: cabin_geometry's output is shifted by cx afterwards.
-    centre = (side * (hw - 8) - side * 0.4, sill - 2.0, zd - 10.0)
-    return centre, along, tilt
+    yt = sill + DASH_BOTTOM + DASH_RISE
+    zt = zd + DASH_RISE * math.tan(math.radians(DASH_LEAN_DEG))
+    eye = (seat[0] - cab["cx"], seat[1], seat[2])
+    x = (-1.0, 0.0, 0.0)
+    back = (0.0, yt + POD_HEIGHT / 2, zt + 2.5 + POD_DEPTH)  # the pod's back edge, on the shelf
+    n = unit(sub(eye, back))
+    y = facing_up(back, eye, x)
+    face = tuple(back[i] + n[i] * POD_DEPTH for i in range(3))
+    return face, x, y, n
 
 
-def cabin_geometry(cab, generic):
+def pod_lamp(cab, seat, k):
+    """Lamp k's centre (0: left, 1: right), width and height on the pod face."""
+    face, x, y, n = pod_frame(cab, seat)
+    pw = POD_WIDTH * cab["hw"]
+    c = tuple(face[i] + x[i] * (k - 0.5) * 0.5 * pw + n[i] * 0.12 for i in range(3))
+    return c, 0.47 * pw, 0.72 * POD_HEIGHT
+
+
+def pod_text(cab, seat, k):
+    """Origin (the text's top-left, just in front of the lamp) and the per-font-pixel steps right and
+    down, for the C side's lamp lettering."""
+    _, x, y, n = pod_frame(cab, seat)
+    c, w, _ = pod_lamp(cab, seat, k)
+    px = 0.84 * w / POD_TEXT_PX
+    tw = (len(POD_TEXT[k]) * 6 - 1) * px
+    o = tuple(c[i] - x[i] * tw / 2 + y[i] * 3.5 * px + n[i] * 0.15 for i in range(3))
+    return o, tuple(v * px for v in x), tuple(-v * px for v in y)
+
+
+def cabin_geometry(cab, generic, seat):
     hw, fl, sill, top, z0, z1 = cab["hw"], cab["floor"], cab["sill"], cab["top"], cab["z0"], cab["z1"]
     L = z1 - z0
     out = []
@@ -178,26 +217,25 @@ def cabin_geometry(cab, generic):
     quad(out, P["DASH"], (-hw, yb, zd), (hw, yb, zd), (hw, yt, zt), (-hw, yt, zt))
     quad(out, P["DASH"], (-hw, yt, zt), (hw, yt, zt), (hw, yt, zt + DASH_SHELF), (-hw, yt, zt + DASH_SHELF))
     quad(out, P["WALL"], (-hw, fl, zd), (hw, fl, zd), (hw, yb, zd), (-hw, yb, zd))  # below the face
-    # Warning lamps on the sills' inner lips, just behind the dash, in the viewer's peripheral vision:
-    # low energy on the left sill (the host's "CHECK ENGINE" label under it), boost on the right
-    # ("BOOST READY"). Model +x is the viewer's left. The C side colours them every tick; the host's
-    # kSillLabels / SillLabelPanel must match this placement.
-    for side, part in ((1, "LAMP_ENERGY"), (-1, "LAMP_BOOST")):
-        c, along, tilt = sill_lamp_frame(cab, side)
-        quad(out, P[part], *[tuple(c[i] + tilt[i] * 1.2 + along[i] * du + tilt[i] * dv for i in range(3))
-                             for du, dv in ((-4, 1.2), (4, 1.2), (4, -1.2), (-4, -1.2))])
-    # Racer-behind lamps at both ends of the rear-view mirror, blinking to draw the eye to it (the
-    # user's idea). The host draws the mirror itself: centred at (cx, top - 7, z1 - 4), 0.55 half-widths
-    # wide, 3:1, leaning back 8 degrees (gdx_openxr.cpp AddCabinHudLayers); these sit just in front of
-    # its ends.
-    mw = 0.55 * hw
-    mh = mw / 3
-    me = math.radians(8.0)
-    my_axis = (0.0, math.cos(me), math.sin(me))
-    for s in (-1, 1):
-        mc = (s * (mw / 2 + 2.2), top - 7, z1 - 4 - 0.3)
-        quad(out, P["LAMP_BEHIND"], *[tuple(mc[i] + (du if i == 0 else 0.0) + my_axis[i] * dv for i in range(3))
-                                      for du, dv in ((-1.6, 0.4 * mh), (1.6, 0.4 * mh), (1.6, -0.4 * mh), (-1.6, -0.4 * mh))])
+    # The annunciator pod on the shelf (pod_frame): its face, top and sides, and the two lamps.
+    face, x, y, n = pod_frame(cab, seat)
+    pw = POD_WIDTH * hw
+    def corner(c, du, dv, dn=0.0, axis_v=y):
+        return tuple(c[i] + x[i] * du + axis_v[i] * dv + n[i] * dn for i in range(3))
+    h2 = POD_HEIGHT / 2
+    quad(out, P["DASH"], corner(face, -pw / 2, h2), corner(face, pw / 2, h2), corner(face, pw / 2, -h2),
+         corner(face, -pw / 2, -h2))
+    quad(out, P["BULKHEAD"], corner(face, -pw / 2, h2, -POD_DEPTH), corner(face, pw / 2, h2, -POD_DEPTH),
+         corner(face, pw / 2, h2), corner(face, -pw / 2, h2))
+    for sgn in (-1, 1):
+        quad(out, P["DASH"], corner(face, sgn * pw / 2, h2), corner(face, sgn * pw / 2, h2, -POD_DEPTH),
+             corner(face, sgn * pw / 2, -h2, -POD_DEPTH), corner(face, sgn * pw / 2, -h2))
+    for k, part in enumerate(("LAMP_ENERGY", "LAMP_BOOST")):
+        c, w, h = pod_lamp(cab, seat, k)
+        quad(out, P[part], corner(c, -w / 2, h / 2), corner(c, w / 2, h / 2), corner(c, w / 2, -h / 2),
+             corner(c, -w / 2, -h / 2))
+    # LAMP_BEHIND has no geometry any more: the racer-behind warning is the mirror's own frame,
+    # drawn by the VR host, so it can't drift out of line with the mirror.
     if generic:
         zf = z1 - 4
         zn = z1 + 0.25 * L
@@ -259,7 +297,7 @@ def main():
         tris = m.triangles(name)
         cab, single, glass, seat = place(tris)
         geom = [(part, tuple((v[0] + cab["cx"], v[1], v[2]) for v in tri))
-                for part, tri in cabin_geometry(cab, generic=not single)]
+                for part, tri in cabin_geometry(cab, not single, seat)]
         if single:
             glass_rgb = tuple(int(0.65 * e + 0.35 * p) for e, p in zip(glass[0]["env"], glass[0]["prim"]))
             for t in glass:
@@ -272,7 +310,11 @@ def main():
             tris_out.append((part, a, b, c, n))
         for t in glass:  # every glass triangle is replaced: by GLASS_OWN, or by the generic frame
             cut_glass.append(tuple(round(sum(v[i] for v in t["v"]) / 3) for i in range(3)))
-        machines.append({"name": name, "kind": 1 if single else 2, "cab": cab, "seat": seat,
+        text = []
+        for k in range(len(POD_TEXT)):
+            o, dx, dy = pod_text(cab, seat, k)
+            text.append(((o[0] + cab["cx"], o[1], o[2]), dx, dy))
+        machines.append({"name": name, "kind": 1 if single else 2, "cab": cab, "seat": seat, "text": text,
                          "tri": (tri_start, len(tris_out) - tri_start),
                          "glass": (glass_start, len(cut_glass) - glass_start), "rgb": glass_rgb})
 
@@ -305,7 +347,13 @@ def main():
         "    unsigned char glassRgb[3];",
         "    short dash[3];      /* centre of the dash face, which leans back 25 degrees from vertical */",
         "    short dashHalfWidth;",
+        "    /* lamp lettering (kGdxCabinLampText), per lamp: the text's top-left, then one font pixel",
+        "       to the right and one down */",
+        "    float lampText[2][3][3];",
         "} GdxCabinMachine;",
+        "",
+        "/* The pod lamps' text, LAMP_ENERGY first, in the 5x7 font the C side carries. */",
+        "static const char* const kGdxCabinLampText[2] = { " + ", ".join(f'\"{t}\"' for t in POD_TEXT) + " };",
         "",
         f"#define GDX_CABIN_MACHINE_COUNT {len(machines)} /* sMachineDrawFuncs order: 30 pilots, then super machines */",
         "static const GdxCabinMachine kGdxCabinMachines[GDX_CABIN_MACHINE_COUNT] = {",
@@ -318,7 +366,8 @@ def main():
                      f"{{ {', '.join(map(str, mc['rgb']))} }}, "
                      f"{{ {r(c['cx'])}, {r(c['sill'] + DASH_BOTTOM + DASH_RISE / 2)}, "
                      f"{r(c['z1'] - 0.35 * (c['z1'] - c['z0']) + DASH_RISE / 2 * math.tan(math.radians(DASH_LEAN_DEG)))} }}, "
-                     f"{r(c['hw'])} }}, /* {mc['name']} */")
+                     f"{r(c['hw'])}, {{ " + ", ".join("{ " + ", ".join("{ " + ", ".join(f"{v:.3f}f" for v in vec) + " }"
+                                                             for vec in t) + " }" for t in mc["text"]) + f" }} }}, /* {mc['name']} */")
     lines += ["};", "", f"static const GdxCabinTri kGdxCabinTris[{len(tris_out)}] = {{"]
     for part, a, b, c, n in tris_out:
         vs = ", ".join("{ " + ", ".join(str(r(x)) for x in v) + " }" for v in (a, b, c))

@@ -300,7 +300,7 @@ Measured on the Frame (72 Hz runtime default, headset in standby, forced renderi
 | `GDX_VR_DIAG_GEOM=<n>` | Log the first n cockpit eye renders' far-plane vertex count, clip-rejected and emitted triangles (`[vr-geom]`). |
 | `GDX_VR_DIAG_PITCH=<deg>` | Tilt the located head about its own x axis (negative looks down), e.g. to capture the cabin dash. |
 | `GDX_VR_CABIN_IN_CHASE=1` | Also draw the cabin (without the hull cut) in the chase view, to inspect it from outside. |
-| `GDX_VR_COCKPIT_NEAR=<units>`, `GDX_VR_COCKPIT_FAR_SCALE=<x>` | Override the cockpit projection's near plane (default 2) and far multiple (default 4), for experiments. |
+| `GDX_VR_COCKPIT_NEAR=<units>`, `GDX_VR_COCKPIT_FAR_SCALE=<x>` | Override the cockpit projection's near plane (default 0.5 in the cabin, 2 on the roof) and far multiple (default 4), for experiments. |
 | `GDX_PERF=1` | Makes the `logic` and `xlate` stages of `[vr-perf]` real (they come from the port's GDX_PERF telemetry; they read 0.00 otherwise). |
 
 `[vr-perf]` is logged every 10 s while a session runs (sfvr_perf, the cross-port format):
@@ -480,27 +480,38 @@ edits all of these except `Stereo` and `WideCull`.
     - HUD crops (`imageRect`) of the race HUD swapchain as quad layers, posed from the machine's body
       frame through the cockpit eye anchor into LOCAL (`WorldToTracking`; `kDashPanels`), all on the
       dash face: energy over the timer on the left, the minimap in the centre, speed on the right. The
-      face leans back 25 degrees from vertical towards the viewer, with a shelf on top
-      (`DASH_LEAN_DEG` in the generator, `kDashFaceDeg` here); the first offline render had a
-      near-horizontal dash and an upright minimap standing off it, and the user wanted the dash facing
-      them with the minimap part of it. `DashHudSize` (0.45; first wear found full size
-      too large) scales them. Only portraits, lap, position and centre messages still float (one
-      crop). Crops assume OpenGL bottom-up rows (`HudRect`).
-    - Warning lamps on the sills' inner lips just behind the dash (cabin geometry, unlit, coloured
-      per tick in `gdx_cabin_lamps`): red on the left sill for energy under 25% (blinking, faster
-      under 10%), green on the right while boost is available (flashing while boosting). Labels under
-      them, drawn once in a 5x7 pixel font into a small swapchain and shown as quads only while their
-      lamp is lit (`gGdxVrCabinLamp`): "CHECK ENGINE" and "BOOST READY". The user picked the sills
-      from three offline-rendered placements (glare-shield strip, mirror/boost bar/pod, sills).
-      Amber racer-behind lamps sit at both ends of the rear-view mirror and blink while a racer is
-      within the game's CHECK distance (faster under 1000), to draw the eye to the mirror.
+      face leans back 25 degrees from vertical (`DASH_LEAN_DEG` in the generator, `kDashFaceDeg`
+      here), with a shelf on top, and each readout is turned to face the seat (`PlaceFacingSeat`).
+      First wear (2026-10-05) found them far too large and too far out, needing a head turn: now
+      about 10 degrees wide at the default `DashHudSize` (0.45), within about 17 degrees of straight
+      ahead. The minimap crop is the game's whole 64x64 map box (`minimap.c`, right-anchored), since a
+      course is drawn anywhere inside it; the old crop fitted one course and cut wider ones off.
+      Crops assume OpenGL bottom-up rows (`HudRect`).
+    - Floating HUD: the HUD swapchain holds two stacked copies of the HUD, the whole one (chase view,
+      dash crops) and one with the four dash crops cut out by the combine shader, which the cabin
+      shows as its floating panel. The cabin used to float a crop of the left two-thirds, which cut
+      off FINISH, the lap times and the place on the right (2026-10-05 wear).
+    - Annunciator pod: a block rising from the middle of the dash shelf, its face turned to the seat,
+      with two lamps: "CHECK ENGINE" (red, energy under 25%) on the left and "BOOST READY" (green,
+      while a boost is available and not running) on the right. Cabin geometry, unlit, coloured per
+      tick in `gdx_cabin_lamps`; the lettering is part of the lamp, built from a 5x7 font as one quad
+      per run of lit pixels (`gdx_cabin_emit_text`, from the generator's per-machine text frames, in
+      model units x64 under a 1/64 scale since a font pixel is a fifth of a unit): dark on a lit
+      lamp, pale on a dark one. Blinks are 1.5 Hz, 3 Hz when urgent (energy under 10%, a racer within
+      1000). Replaced sill lamps with quad labels (2026-10-05 wear: out of view at speed, a 10 Hz
+      boost flash, 3-7.5 Hz blinking, labels drifting against the cabin).
     - Rear-view mirror (`CabinMirror`, on): a third world replay per tick from the cockpit anchor
       raised 4 model units above the canopy top (the cabin's bulkhead fills it otherwise), turned
       180 degrees, 60 x 20 degree FOV, 768x256, copied flipped left to right into its own swapchain
-      and shown as a quad at the top of the windscreen. `GDX_VR_DUMP_FRAME` also writes
-      `vr-mirror.bmp` (unflipped).
-    - Not yet run on the Frame: layout, lamps and mirror (cost and view) are build- and test-verified
-      only.
+      and shown as a quad 40 model units ahead of the seat and up to 11 above it, about 13 degrees
+      wide, facing the seat (it was in the middle of the forward view, 19 degrees wide). Its frame
+      is drawn into its own image: a dark bezel that blinks amber while a racer is close behind
+      (`gGdxVrCabinLamp[1]`), replacing amber cabin lamps at the mirror ends that drifted against it.
+      `GDX_VR_DUMP_FRAME` also writes `vr-mirror.bmp` (unflipped, before the frame).
+    - Near plane 0.5 in the cabin (2 for the roof seat): the canopy is ~1.3 units over the eye and
+      near 2 cut its top off ("the windshield cuts through my head", 2026-10-05).
+    - Headset-unverified: the 2026-10-05 layout (readouts, pod, mirror, floating HUD, near plane) is
+      build-verified only; the layout was approved from an offline mockup.
   - The pose is snapshotted per tick with the camera poses and interpolated at the frame's t, so it
     stays phase-locked to the rendered machine.
   - Verified unattended (before the tilt and near-plane change): a forced-render cockpit eye dump in
