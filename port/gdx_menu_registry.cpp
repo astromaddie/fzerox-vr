@@ -1244,15 +1244,32 @@ void GdxMenu::RegisterMenu() {
                   WidgetInfo{ .name = "Refresh rate (Hz)", .cVar = "gEnhancements.VR.RefreshRate",
                               .type = GdxUI::WIDGET_CVAR_SLIDER_INT }
                       .Options(UIWidgets::IntSliderOptions()
-                                   .Min(60)
-                                   .Max(144)
-                                   .DefaultValue(90)
+                                   .Min(72)
+                                   .Max(120)
+                                   .DefaultValue(120)
                                    .ShowButtons(false)
                                    .LabelPosition(UIWidgets::LabelPositions::Near)
                                    .Tooltip("The headset is asked for the highest refresh rate it offers at or below\n"
-                                            "this. If the game cannot hold it (under 90% for two 10 s windows)\n"
-                                            "it drops to 72 Hz for the rest of the session."))
+                                            "this. If the game cannot hold it (under 90% of the rate for two 10 s\n"
+                                            "windows while worn) it steps down, 120 to 90 to 72 Hz, for the rest\n"
+                                            "of the session; the setting itself is not changed."))
                       .SearchTerms("refresh rate hz 72 90 120 display"));
+        AddWidget("VR", "VR Settings", SECTION_COLUMN_1,
+                  WidgetInfo{ .name = "Resolution scale (next VR start)", .cVar = "gEnhancements.VR.ResolutionScale",
+                              .type = GdxUI::WIDGET_CVAR_SLIDER_FLOAT }
+                      .Options(UIWidgets::FloatSliderOptions{ .flags = ImGuiSliderFlags_AlwaysClamp }
+                                   .Min(0.75f)
+                                   .Max(1.5f)
+                                   .Step(0.05f)
+                                   .DefaultValue(1.25f)
+                                   .Format("%.2fx")
+                                   .ShowButtons(false)
+                                   .LabelPosition(UIWidgets::LabelPositions::Near)
+                                   .Tooltip("Eye image size as a multiple of what the headset recommends (1728 on\n"
+                                            "the Steam Frame). 1.25x is about the panel's own 2160. Lower it if\n"
+                                            "the game does not hold the refresh rate. Takes effect the next time\n"
+                                            "VR starts."))
+                      .SearchTerms("resolution scale supersampling sharpness eye render size"));
 
         AddWidget("VR", "VR Settings", SECTION_COLUMN_1,
                   WidgetInfo{ .name = "Room", .type = GdxUI::WIDGET_SEPARATOR_TEXT });

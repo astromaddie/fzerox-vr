@@ -78,6 +78,8 @@ enum SettingId {
     kSetWorldScale,
     kSetHaptics, // scale for every haptic pulse (standard.md section 6), 0 = off
     kSetRefreshRate, // Hz ceiling for the display refresh-rate request (XR_FB_display_refresh_rate)
+    kSetResolutionScale, // eye image size = runtime-recommended size x this; applies at the next VR start
+    kSetDisplayStandard, // settings-migration version for the display defaults (kDisplayStandardVersion)
     kSettingCount
 };
 
@@ -122,6 +124,65 @@ bool TriggerClick(bool wasDown, float value);
 // The highest of `rates` (Hz, as enumerated by the runtime) that is <= hz, allowing 0.5 Hz of slack
 // for values such as 89.99; 0 when none qualifies or the list is empty.
 float PickRefreshRate(const float* rates, unsigned count, float hz);
+
+// The next rate down the fallback ladder: the highest of `rates` that is below `current` by more than
+// 0.5 Hz and is not under kRefreshFloorHz; 0 when there is none (already at the bottom, or the runtime
+// offers nothing lower). With 120, 90 and 72 offered that is 120 -> 90 -> 72, but it is picked from
+// what the runtime enumerates, not from a fixed list.
+constexpr float kRefreshFloorHz = 72.0f;
+float NextLowerRefreshRate(const float* rates, unsigned count, float current);
+
+// What RefreshWatch decided for one frame.
+struct RefreshDecision {
+    bool stepDown = false; // request `next` now (the ladder has run out of patience at the current rate)
+    float next = 0.0f;     // the lower enumerated rate to ask for
+    double fps = 0.0;      // the frame rate that failed the last window (for the log)
+};
+
+// The fallback ladder's bookkeeping, pure so it is unit-tested without a runtime or a clock. Fed once
+// per XR frame while a rate `target` is requested. A window is 10 s; one that ends under 90% of the
+// target while focused is a miss, a good one clears the misses, and two misses in a row step down to
+// the next lower enumerated rate. Windows only count while worn: any focus change restarts the window
+// and forgets the misses. After a step the caller calls Restart() (the new rate gets two fresh windows),
+// so 120 -> 90 -> 72 needs four bad windows in all, and nothing below 72.
+class RefreshWatch {
+  public:
+    static constexpr double kWindowSeconds = 10.0;
+    static constexpr double kMissFraction = 0.9;
+    static constexpr int kMissesBeforeStep = 2;
+
+    RefreshDecision Frame(double nowSeconds, bool focused, float target, const float* rates, unsigned count);
+
+    // A new rate was requested (or the setting changed): measure from scratch.
+    void Restart();
+
+    int Misses() const { return misses_; }
+
+  private:
+    bool started_ = false;
+    bool windowFocused_ = false;
+    double windowStart_ = 0.0;
+    long long frames_ = 0;
+    int misses_ = 0;
+};
+
+// Eye image size on one axis: round(recommended x scale), even, held to the view's and the swapchain's
+// largest sizes (a limit of 0 means the runtime gave none). The scale is clamped to the setting's range
+// first. Never returns less than 2.
+int EyeImageSize(int recommended, double scale, int maxImageRect, int maxSwapchain);
+
+// Display-standard migration (standard.md section 9). Configs from before it saved the old default
+// RefreshRate 90; those move to the new default 120 once, and only a saved 90 (a deliberate 72 stays).
+// `savedVersion` is the stored DisplayStandard (0 when absent), `haveRate` whether a RefreshRate was
+// saved at all (a fresh config gets the new default anyway), `savedRate` its value.
+constexpr int kDisplayStandardVersion = 1;
+struct DisplayMigration {
+    bool changed = false;  // anything to write back
+    int version = 0;       // DisplayStandard to store
+    bool setRate = false;  // RefreshRate should be rewritten
+    int rate = 0;          // ... to this
+};
+DisplayMigration MigrateDisplayStandard(int savedVersion, bool haveRate, double savedRate);
 
 // Cockpit view: the height (world units above the machine's underside) of the roof the eye must see
 // over, for an eye `forward` world units ahead of the machine's origin. `machine` is the stock model

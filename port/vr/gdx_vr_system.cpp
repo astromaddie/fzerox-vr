@@ -40,7 +40,9 @@ const SettingInfo kSettings[kSettingCount] = {
     { "gEnhancements.VR.CabinMirror", true, 1.0, 0.0, 1.0 },
     { "gEnhancements.VR.WorldScale", false, 1.0, 1.0, 50.0 },     // world units per metre
     { "gEnhancements.VR.Haptics", false, 0.6, 0.0, 1.0 },         // pulse strength scale
-    { "gEnhancements.VR.RefreshRate", true, 90.0, 60.0, 144.0 },  // Hz ceiling, highest offered <= it
+    { "gEnhancements.VR.RefreshRate", true, 120.0, 72.0, 120.0 }, // Hz ceiling, highest offered <= it
+    { "gEnhancements.VR.ResolutionScale", false, 1.25, 0.75, 1.5 }, // x recommended: 1728 x 1.25 = 2160
+    { "gEnhancements.VR.DisplayStandard", true, kDisplayStandardVersion, 0.0, 1000.0 }, // migration version
 };
 
 } // namespace
@@ -123,6 +125,97 @@ float PickRefreshRate(const float* rates, unsigned count, float hz) {
         }
     }
     return chosen;
+}
+
+} // namespace gdx_vr
+
+namespace gdx_vr {
+
+float NextLowerRefreshRate(const float* rates, unsigned count, float current) {
+    float next = 0.0f;
+    for (unsigned i = 0; i < count; i++) {
+        const float r = rates[i];
+        if (std::isfinite(r) && r < current - 0.5f && r >= kRefreshFloorHz - 0.5f && r > next) {
+            next = r;
+        }
+    }
+    return next;
+}
+
+void RefreshWatch::Restart() {
+    started_ = false;
+    frames_ = 0;
+    misses_ = 0;
+}
+
+RefreshDecision RefreshWatch::Frame(double nowSeconds, bool focused, float target, const float* rates,
+                                    unsigned count) {
+    RefreshDecision d;
+    if (target <= 0.0f) {
+        return d;
+    }
+    if (!started_ || focused != windowFocused_) {
+        // A window only counts while worn: restart it whenever focus changes.
+        started_ = true;
+        windowStart_ = nowSeconds;
+        windowFocused_ = focused;
+        frames_ = 0;
+        misses_ = 0;
+        return d;
+    }
+    frames_++;
+    const double seconds = nowSeconds - windowStart_;
+    if (seconds < kWindowSeconds) {
+        return d;
+    }
+    const double fps = (double)frames_ / seconds;
+    windowStart_ = nowSeconds;
+    frames_ = 0;
+    if (!focused) {
+        return d;
+    }
+    if (fps < (double)target * kMissFraction) {
+        if (++misses_ >= kMissesBeforeStep) {
+            const float next = NextLowerRefreshRate(rates, count, target);
+            misses_ = 0;
+            if (next > 0.0f) {
+                d.stepDown = true;
+                d.next = next;
+                d.fps = fps;
+            }
+        }
+    } else {
+        misses_ = 0;
+    }
+    return d;
+}
+
+int EyeImageSize(int recommended, double scale, int maxImageRect, int maxSwapchain) {
+    scale = SanitizeSetting(kSetResolutionScale, scale);
+    long long v = (long long)std::floor((double)recommended * scale + 0.5);
+    if (maxImageRect > 0 && v > maxImageRect) {
+        v = maxImageRect;
+    }
+    if (maxSwapchain > 0 && v > maxSwapchain) {
+        v = maxSwapchain;
+    }
+    v &= ~1LL;
+    return v < 2 ? 2 : (int)v;
+}
+
+DisplayMigration MigrateDisplayStandard(int savedVersion, bool haveRate, double savedRate) {
+    DisplayMigration m;
+    m.version = savedVersion;
+    if (savedVersion >= kDisplayStandardVersion) {
+        return m;
+    }
+    m.changed = true;
+    m.version = kDisplayStandardVersion;
+    if (haveRate && std::isfinite(savedRate) && std::floor(savedRate + 0.5) == 90.0) {
+        m.setRate = true;
+        m.rate = 120;
+    }
+    return m;
 }
 
 } // namespace gdx_vr

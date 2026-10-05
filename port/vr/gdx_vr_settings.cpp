@@ -43,6 +43,30 @@ bool InitSettings() {
     const int32_t kAbsent = INT32_MIN;
     const float kNaN = std::numeric_limits<float>::quiet_NaN();
     bool dirty = false;
+
+    // Display standard (standard.md section 9): a RefreshRate of 90 saved by the old default moves to
+    // the new default 120, once. This runs before the loop below, which would register a missing
+    // DisplayStandard as already current and so skip the migration for exactly the configs it is for.
+    {
+        const SettingInfo& ds = Setting(kSetDisplayStandard);
+        const SettingInfo& rr = Setting(kSetRefreshRate);
+        const int32_t verInt = CVarGetInteger(ds.cvar, kAbsent);
+        const float verFloat = CVarGetFloat(ds.cvar, kNaN);
+        const int version = verInt != kAbsent ? verInt : (!std::isnan(verFloat) ? (int)verFloat : 0);
+        const int32_t rateInt = CVarGetInteger(rr.cvar, kAbsent);
+        const float rateFloat = CVarGetFloat(rr.cvar, kNaN);
+        const bool haveRate = rateInt != kAbsent || !std::isnan(rateFloat);
+        const double savedRate = rateInt != kAbsent ? (double)rateInt : (double)rateFloat;
+        const DisplayMigration m = MigrateDisplayStandard(version, haveRate, savedRate);
+        if (m.changed) {
+            CVarSetInteger(ds.cvar, m.version);
+            if (m.setRate) {
+                CVarSetInteger(rr.cvar, m.rate);
+                gdx_port_logf("[vr] display standard: saved %s=90 moved to %d Hz (once)\n", rr.cvar, m.rate);
+            }
+            dirty = true;
+        }
+    }
     for (int i = 0; i < kSettingCount; i++) {
         const SettingId id = (SettingId)i;
         const SettingInfo& si = Setting(id);
@@ -75,13 +99,14 @@ bool InitSettings() {
         CVarSave();
     }
     gdx_port_logf("[vr] settings: stereo=%d wide_cull=%d camera_mode=%d horizon_lock=%d level_pitch=%d "
-                  "hud_aspect=%.3f hud_height=%.2f roof_forward=%.1f roof_clearance=%.1f cockpit_tilt=%.2f cockpit_style=%d cabin_seat=%.1f/%.1f world_scale=%.1f haptics=%.2f refresh_rate=%d%s\n",
+                  "hud_aspect=%.3f hud_height=%.2f roof_forward=%.1f roof_clearance=%.1f cockpit_tilt=%.2f cockpit_style=%d cabin_seat=%.1f/%.1f world_scale=%.1f haptics=%.2f refresh_rate=%d resolution_scale=%.2f display_standard=%d%s\n",
                   SettingInt(kSetStereo), SettingInt(kSetWideCull), SettingInt(kSetCameraMode),
                   SettingInt(kSetHorizonLock), SettingInt(kSetLevelPitch), SettingFloat(kSetHudAspect), SettingFloat(kSetHudHeight),
                   SettingFloat(kSetRoofForward), SettingFloat(kSetRoofClearance), SettingFloat(kSetCockpitTilt),
                   SettingInt(kSetCockpitStyle), SettingFloat(kSetCabinSeatUp), SettingFloat(kSetCabinSeatForward),
                   SettingFloat(kSetWorldScale),
-                  SettingFloat(kSetHaptics), SettingInt(kSetRefreshRate), dirty ? " (saved)" : "");
+                  SettingFloat(kSetHaptics), SettingInt(kSetRefreshRate),
+                  SettingFloat(kSetResolutionScale), SettingInt(kSetDisplayStandard), dirty ? " (saved)" : "");
     return dirty;
 }
 

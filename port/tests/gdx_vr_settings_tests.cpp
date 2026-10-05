@@ -48,6 +48,8 @@
 
 extern "C" {
 void CVarLoad();
+void CVarSetInteger(const char* name, int32_t value);
+void CVarSave();
 int32_t osAiSetNextBuffer(void* buff, size_t len);
 
 // libultraship's os.cpp (pulled in by osAiSetNextBuffer) resolves these against the port at link
@@ -154,6 +156,40 @@ static void CaseRenamedKeys() {
     check("second pass has nothing to save", !gdx_vr::InitSettings());
 }
 
+static void CaseDisplayStandardMigration() {
+    std::printf("  display standard: a saved 90 moves to 120 once\n");
+    WriteConfig(R"({
+        "CVars": { "gEnhancements": { "VR": { "Stereo": 1, "RefreshRate": 90 } } }
+    })");
+    CVarLoad();
+    check("first pass saves", gdx_vr::InitSettings());
+    nlohmann::json vr = ReadVr();
+    check("old default 90 is now 120", vr.value("RefreshRate", 0) == 120);
+    check("version stored", vr.value("DisplayStandard", 0) == gdx_vr::kDisplayStandardVersion);
+    check("resolution scale registered at 1.25", std::fabs(vr.value("ResolutionScale", 0.0) - 1.25) < 1e-6);
+    check("second pass has nothing to save", !gdx_vr::InitSettings());
+
+    // The user picks 90 afterwards: it sticks.
+    CVarSetInteger("gEnhancements.VR.RefreshRate", 90);
+    CVarSave();
+    check("a 90 chosen after the migration is kept", !gdx_vr::InitSettings() &&
+                                                         ReadVr().value("RefreshRate", 0) == 90);
+
+    std::printf("  display standard: a saved 72 stays, a missing rate gets 120\n");
+    WriteConfig(R"({
+        "CVars": { "gEnhancements": { "VR": { "Stereo": 1, "RefreshRate": 72 } } }
+    })");
+    CVarLoad();
+    check("saves", gdx_vr::InitSettings());
+    check("72 kept", ReadVr().value("RefreshRate", 0) == 72);
+    check("version stored", ReadVr().value("DisplayStandard", 0) == gdx_vr::kDisplayStandardVersion);
+    WriteConfig(R"({ "CVars": { "gEnhancements": { "VR": { "Stereo": 1 } } } })");
+    CVarLoad();
+    check("saves", gdx_vr::InitSettings());
+    check("fresh config: default 120", ReadVr().value("RefreshRate", 0) == 120);
+    check("second pass has nothing to save", !gdx_vr::InitSettings());
+}
+
 static void CaseWrongTypes() {
     std::printf("  values of the wrong type and out of range\n");
     WriteConfig(R"({
@@ -168,7 +204,7 @@ static void CaseWrongTypes() {
     check("float for an int converted (Stereo 1)", vr.value("Stereo", -1) == 1);
     check("int for a float converted (HudHeight 2.0)", std::fabs(vr.value("HudHeight", 0.0) - 2.0) < 1e-6);
     check("string replaced by the default (WorldScale 1)", std::fabs(vr.value("WorldScale", 0.0) - 1.0) < 1e-6);
-    check("out of range clamped (RefreshRate 144)", vr.value("RefreshRate", 0) == 144);
+    check("out of range clamped (RefreshRate 120)", vr.value("RefreshRate", 0) == 120);
     check("in-range value kept (Haptics 0.25)", std::fabs(vr.value("Haptics", 0.0) - 0.25) < 1e-6);
     check("second pass has nothing to save", !gdx_vr::InitSettings());
 }
@@ -310,6 +346,7 @@ int main() {
     CaseFirstLaunch(); // must stay first: it needs a config file that has never existed
     CaseRenamedKeys();
     CaseWrongTypes();
+    CaseDisplayStandardMigration();
 #ifndef _WIN32
     CaseSigtermAfterStartupSave();
     CaseDuplicateSignalAbsorbed();

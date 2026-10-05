@@ -282,10 +282,9 @@ struct State {
     PFN_xrGetDisplayRefreshRateFB getRate = nullptr;
     int refreshWanted = 0;       // gEnhancements.VR.RefreshRate as last applied; 0 = not applied yet
     float refreshTarget = 0.0f;  // rate actually requested from the runtime, Hz (0 = none)
-    int refreshMisses = 0;       // consecutive 10 s windows below 90% of the target
-    double refreshWindowStartS = 0.0;
-    long long refreshWindowFrames = 0;
-    bool refreshWindowFocused = false; // focused for the whole window so far
+    float refreshRates[32] = {}; // rates the runtime enumerated at the last request, Hz
+    unsigned refreshRateCount = 0;
+    gdx_vr::RefreshWatch refreshWatch; // the fallback ladder's windows and misses (gdx_vr_system)
     bool cockpit = false;            // cockpit view instead of the chase camera
     bool focused = false;
 
@@ -1195,9 +1194,22 @@ bool CreateEverything() {
     if (!CreateSwapchain(s.quad, drawW, drawH, "xrCreateSwapchain(quad)")) {
         return false;
     }
+    const float resolutionScale = SettingFloat(kSetResolutionScale);
     for (int e = 0; e < 2; e++) {
-        if (!CreateSwapchain(s.eyes[e], (int32_t)vcv[e].recommendedImageRectWidth,
-                             (int32_t)vcv[e].recommendedImageRectHeight, "xrCreateSwapchain(eye)")) {
+        // Eye images are created at the render size: the recommended size times the resolution scale,
+        // so the render target (which follows the swapchain) is never larger than what is submitted.
+        const int32_t eyeW = gdx_vr::EyeImageSize((int32_t)vcv[e].recommendedImageRectWidth, resolutionScale,
+                                                  (int32_t)vcv[e].maxImageRectWidth,
+                                                  (int32_t)sp.graphicsProperties.maxSwapchainImageWidth);
+        const int32_t eyeH = gdx_vr::EyeImageSize((int32_t)vcv[e].recommendedImageRectHeight, resolutionScale,
+                                                  (int32_t)vcv[e].maxImageRectHeight,
+                                                  (int32_t)sp.graphicsProperties.maxSwapchainImageHeight);
+        gdx_port_logf("[vr] eye %d: recommended %ux%u, max view %ux%u, max swapchain %ux%u, resolution_scale %.2f -> %dx%d\n",
+                      e, vcv[e].recommendedImageRectWidth, vcv[e].recommendedImageRectHeight,
+                      vcv[e].maxImageRectWidth, vcv[e].maxImageRectHeight,
+                      sp.graphicsProperties.maxSwapchainImageWidth, sp.graphicsProperties.maxSwapchainImageHeight,
+                      (double)resolutionScale, eyeW, eyeH);
+        if (!CreateSwapchain(s.eyes[e], eyeW, eyeH, "xrCreateSwapchain(eye)")) {
             return false;
         }
     }
@@ -1222,13 +1234,13 @@ bool CreateEverything() {
                   "runtime=%s\n"
                   "version=%u.%u.%u\n"
                   "system=%s\n"
-                  "view_config=PRIMARY_STEREO eye_size=%dx%d\n"
+                  "view_config=PRIMARY_STEREO eye_size=%dx%d resolution_scale=%.2f\n"
                   "gl_requirements=%u.%u..%u.%u gl_version=%s\n"
                   "graphics_binding=opengl_xlib video_driver=%s\n"
                   "swapchain_format=0x%llx quad=%dx%d\n"
                   "[/openxr]\n",
                   ip.runtimeName, XR_VERSION_MAJOR(ip.runtimeVersion), XR_VERSION_MINOR(ip.runtimeVersion),
-                  XR_VERSION_PATCH(ip.runtimeVersion), sp.systemName, s.eyes[0].width, s.eyes[0].height,
+                  XR_VERSION_PATCH(ip.runtimeVersion), sp.systemName, s.eyes[0].width, s.eyes[0].height, (double)resolutionScale,
                   XR_VERSION_MAJOR(reqs.minApiVersionSupported), XR_VERSION_MINOR(reqs.minApiVersionSupported),
                   XR_VERSION_MAJOR(reqs.maxApiVersionSupported), XR_VERSION_MINOR(reqs.maxApiVersionSupported),
                   (const char*)glGetString(GL_VERSION), SDL_GetCurrentVideoDriver() ? SDL_GetCurrentVideoDriver() : "?",
@@ -1260,11 +1272,13 @@ void SetDesktopSwapBlocking(bool block) {
 
 // --- Display refresh rate ----------------------------------------------------------------------
 //
-// gEnhancements.VR.RefreshRate (default 90) is a ceiling: the highest rate the runtime offers that
-// is <= it is requested. Higher rates are only worth it if the game holds them while worn, so the
-// monitor below falls back to 72 Hz after two consecutive 10 s windows in which the XR frame rate
-// stayed under 90% of the target (the same policy as the Halo port). The fallback lasts for the
-// session and is not written back to the CVar. The simulation is unaffected by any of this: the
+// gEnhancements.VR.RefreshRate (72..120, default 120) is a ceiling: the highest rate the runtime offers
+// that is <= it is requested. A higher rate is only worth it if the game holds it while worn, so the
+// monitor falls back down the ladder 120 -> 90 -> 72 (each step is the next lower rate the runtime
+// enumerates, never below 72): two consecutive 10 s windows in which the XR frame rate stayed under 90%
+// of the current rate, while focused, step down one rung, and the count starts again at each rung. The
+// decision lives in gdx_vr::RefreshWatch (tests/gdx_vr_system_tests.cpp). A fallback lasts for the
+// session and is never written back to the CVar. The simulation is unaffected by any of this: the
 // scheduler places frames by predictedDisplayTime (tests/gdx_vr_scheduler_tests.cpp).
 
 // Ask the runtime for the best offered rate <= hz. Returns the rate requested, or 0.
@@ -1278,6 +1292,13 @@ float RequestRefreshRate(float hz, const char* why) {
     if (!Check(s.enumerateRates(s.session, 32, &count, rates), "xrEnumerateDisplayRefreshRatesFB")) {
         return 0.0f;
     }
+    if (count > 32) {
+        count = 32;
+    }
+    for (uint32_t i = 0; i < count; i++) {
+        s.refreshRates[i] = rates[i];
+    }
+    s.refreshRateCount = count;
     char list[256];
     size_t off = 0;
     for (uint32_t i = 0; i < count && off + 16 < sizeof(list); i++) {
@@ -1297,9 +1318,7 @@ float RequestRefreshRate(float hz, const char* why) {
     gdx_port_logf("[vr] refresh rate: requested %.0f Hz (wanted <= %.0f, %s); offered [%s]; runtime reports %.1f Hz\n",
                   (double)chosen, (double)hz, why, list, (double)current);
     s.refreshTarget = chosen;
-    s.refreshMisses = 0;
-    s.refreshWindowStartS = 0.0;
-    s.refreshWindowFrames = 0;
+    s.refreshWatch.Restart();
     return chosen;
 }
 
@@ -1315,36 +1334,16 @@ void RefreshRateFrame(double nowS) {
         RequestRefreshRate((float)wanted, s.refreshTarget == 0.0f ? "session start" : "setting changed");
         return;
     }
-    if (s.refreshTarget <= 72.5f) {
-        return; // nothing below 72 Hz is worth falling back from
-    }
-    if (s.refreshWindowStartS == 0.0 || s.focused != s.refreshWindowFocused) {
-        // A window only counts while worn: restart it whenever focus changes.
-        s.refreshWindowStartS = nowS;
-        s.refreshWindowFrames = 0;
-        s.refreshWindowFocused = s.focused;
-        s.refreshMisses = 0;
-        return;
-    }
-    s.refreshWindowFrames++;
-    const double seconds = nowS - s.refreshWindowStartS;
-    if (seconds < 10.0) {
-        return;
-    }
-    const double fps = (double)s.refreshWindowFrames / seconds;
-    s.refreshWindowStartS = nowS;
-    s.refreshWindowFrames = 0;
-    if (!s.focused) {
-        return;
-    }
-    if (fps < (double)s.refreshTarget * 0.9) {
-        if (++s.refreshMisses >= 2) {
-            gdx_port_logf("[vr] refresh rate: %.0f Hz not held (%.1f frames/s over 10 s, twice): back to 72 Hz\n",
-                          (double)s.refreshTarget, fps);
-            RequestRefreshRate(72.0f, "fallback");
+    const gdx_vr::RefreshDecision d =
+        s.refreshWatch.Frame(nowS, s.focused, s.refreshTarget, s.refreshRates, s.refreshRateCount);
+    if (d.stepDown) {
+        const float from = s.refreshTarget;
+        gdx_port_logf("[vr] refresh rate: %.0f Hz not held (%.1f frames/s over 10 s, twice): falling back to %.0f Hz\n",
+                      (double)from, d.fps, (double)d.next);
+        if (RequestRefreshRate(d.next, "fallback") <= 0.0f) {
+            gdx_port_logf("[vr] refresh rate: fallback to %.0f Hz was not accepted; staying at %.0f Hz\n",
+                          (double)d.next, (double)from);
         }
-    } else {
-        s.refreshMisses = 0;
     }
 }
 
@@ -1365,6 +1364,7 @@ void HandleSessionState(XrSessionState st) {
                 s.phase = Phase::Running;
                 s.refreshWanted = 0; // (re)apply the refresh-rate setting on the first frame
                 s.refreshTarget = 0.0f;
+                s.refreshWatch.Restart();
                 s.scheduler.Reset();
                 s.pending = PendingFrame{};
                 SetDesktopSwapBlocking(false);
