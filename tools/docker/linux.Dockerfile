@@ -1,6 +1,6 @@
-# Local mirror of the pinned build environment in .github/workflows/release-linux.yml, so a Linux
-# release build (x86-64 or arm64, matching the host Docker architecture) can be produced and
-# ABI-checked without pushing a tag. Keep the versions below in sync with that workflow.
+# Local mirror of the pinned build environment in .github/workflows/release-linux.yml. Select the
+# Docker target platform explicitly when it differs from the Docker engine's platform. Keep the
+# versions below in sync with that workflow.
 #
 #   docker build -t gdx-linux -f tools/docker/linux.Dockerfile tools/docker
 #   tools/docker/build-linux.sh

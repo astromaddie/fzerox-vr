@@ -14,22 +14,15 @@ The VR menu includes world scale, camera, HUD, haptics and display settings. The
 
 ## Game data
 
-Playing the game needs your own US revision 0 F-Zero X ROM, the translated 64DD Expansion Kit disk image (or the supported Japanese image), and a 64DD IPL ROM. The game extracts its runtime data locally. This repository does not include Nintendo ROMs, disk images, IPL files or generated game assets. See the [saved G-Diffuser README](docs/README_UPSTREAM.md) for the original project's data policy and general features.
+Playing the documented Frame build needs your own US revision 0 F-Zero X ROM, the translated 64DD Expansion Kit disk image, and a supported 64DD IPL ROM. The default build refuses Japanese-region game data. The game extracts its runtime data locally. This repository does not include Nintendo ROMs, disk images, IPL files or generated game assets. See the [saved G-Diffuser README](docs/README_UPSTREAM.md) for the original project's data policy and general features.
 
-## Build
+## Build and install
 
-Build on an ARM64 Linux host with Docker. First build the repository's pinned Linux environment, then build the OpenXR target from the repository root:
-
-```sh
-git clone --recurse-submodules --branch vr/openxr-m0 https://github.com/astromaddie/fzerox-vr.git
-cd fzerox-vr
-docker build -t gdx-linux -f tools/docker/linux.Dockerfile tools/docker
-CMAKE_BUILD_PARALLEL_LEVEL=4 tools/docker/build-linux.sh build/openxr-arm64 -DGDX_OPENXR=ON
-```
+The [Steam Frame build and install guide](docs/STEAM-FRAME-BUILD-INSTALL.md) covers ARM64 Docker builds from Linux, macOS, or Windows through WSL2, the ROM/disk/firmware inputs, package output, first installation and Steam launch. It distinguishes the standalone Linux ARM64 Frame package from desktop and Windows builds.
 
 The application builds without game data. A fresh ARM64 OpenXR build, all 293 VR checks, ABI checks and ROM-free package assembly passed. See [PR0 build details](docs/PR0_READINESS.md) and the [changelog](CHANGELOG.md).
 
-This configures the optional OpenXR target and builds `G-Diffuser`; launch with `--vr` or `GDX_VR=1`. See [docs/VR_ARCHITECTURE.md](docs/VR_ARCHITECTURE.md) for the current VR implementation and controls. Sections 1–3 retain earlier M0 design and device notes; section 4 and the current-behavior sections near the end describe the implemented path.
+See [docs/VR_ARCHITECTURE.md](docs/VR_ARCHITECTURE.md) for the current VR implementation and controls. Sections 1–3 retain earlier M0 design and device notes; section 4 and the current-behavior sections near the end describe the implemented path.
 
 G-Diffuser is maintained by Zorkats and contributors and builds on [inspectredc/fzerox](https://github.com/inspectredc/fzerox) and [Kenix3/libultraship](https://github.com/Kenix3/libultraship). The original README, including general platform/build information and the game's license policy, is preserved at [docs/README_UPSTREAM.md](docs/README_UPSTREAM.md).
 
