@@ -2,7 +2,7 @@
   "schema_version": 1,
   "milestone": "PR0",
   "status": "EXPERIMENTAL",
-  "publication_status": "ready for public source; no binary release",
+  "publication_status": "public experimental source; no binary release",
   "tested_commit": "e6cc30b2c83b8fd8b590f30ee891c66f65ec52f2",
   "tested_source_changes": [
     ".gitmodules public fork URLs",
@@ -39,5 +39,6 @@
   },
   "distribution_blockers": [],
   "license_scope": "Original G-Diffuser MIT and component notices retained. No permission to redistribute Nintendo game data is implied.",
-  "changelog": "CHANGELOG.md"
+  "changelog": "CHANGELOG.md",
+  "source_preparation_commit": "9a451ef8d78fd5da3937f631a4755afede77a9c3"
 }

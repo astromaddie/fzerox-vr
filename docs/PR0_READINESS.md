@@ -35,4 +35,4 @@ Package: `G-Diffuser-vpr0-linux-arm64.tar.gz`
 
 SHA-256: `ab5cbd818cd1dd0e30a244143d6af538e490451f9e27d12691fbcb9463e31b70`
 
-The metadata below records the source, toolchain and artifact identity. The package was built for validation; no binary release has been uploaded.
+[PR0_METADATA.json](PR0_METADATA.json) records the source, toolchain and artifact identity. The package was built for validation; no binary release has been uploaded.
