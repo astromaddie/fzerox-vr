@@ -4,6 +4,8 @@ This branch adds a native VR mode to [G-Diffuser](https://github.com/Zorkats/G-D
 
 **EXPERIMENTAL.** I made this for personal use, and it's still a work in progress. Bring your own game data.
 
+**Want to play on Steam Frame?** Download the prebuilt standalone package from the [v0.1.0 prerelease](https://github.com/astromaddie/fzerox-vr/releases/tag/v0.1.0); no compiler is needed. You still need your own supported US F-Zero X ROM, translated Expansion Kit disk image and supported 64DD IPL ROM.
+
 Race in stereo from a chase view or from inside your machine. Cockpit options include a cabin or roof seat, dashboard readouts, and a rear-view mirror. The flat menus stay on a panel in front of you, with controller navigation and a laser pointer for selection.
 
 ## Frame controls
