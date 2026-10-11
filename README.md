@@ -14,7 +14,7 @@ The VR menu includes world scale, camera, HUD, haptics and display settings. The
 
 ## Game data
 
-The full default build needs your own US revision 0 F-Zero X ROM, the translated 64DD Expansion Kit disk image (or the supported Japanese image), and a 64DD IPL ROM. The game extracts its runtime data locally. This repository does not include Nintendo ROMs, disk images, IPL files or generated game assets. See the [saved G-Diffuser README](docs/README_UPSTREAM.md) for the original project's data policy and general features.
+Playing the game needs your own US revision 0 F-Zero X ROM, the translated 64DD Expansion Kit disk image (or the supported Japanese image), and a 64DD IPL ROM. The game extracts its runtime data locally. This repository does not include Nintendo ROMs, disk images, IPL files or generated game assets. See the [saved G-Diffuser README](docs/README_UPSTREAM.md) for the original project's data policy and general features.
 
 ## Build
 
@@ -24,8 +24,10 @@ Build on an ARM64 Linux host with Docker. First build the repository's pinned Li
 git clone --recurse-submodules --branch vr/openxr-m0 https://github.com/astromaddie/fzerox-vr.git
 cd fzerox-vr
 docker build -t gdx-linux -f tools/docker/linux.Dockerfile tools/docker
-tools/docker/build-linux.sh build/openxr-arm64 -DGDX_OPENXR=ON
+CMAKE_BUILD_PARALLEL_LEVEL=4 tools/docker/build-linux.sh build/openxr-arm64 -DGDX_OPENXR=ON
 ```
+
+The application builds without game data. A fresh ARM64 OpenXR build, all 293 VR checks, ABI checks and ROM-free package assembly passed. See [PR0 build details](docs/PR0_READINESS.md) and the [changelog](CHANGELOG.md).
 
 This configures the optional OpenXR target and builds `G-Diffuser`; launch with `--vr` or `GDX_VR=1`. See [docs/VR_ARCHITECTURE.md](docs/VR_ARCHITECTURE.md) for the current VR implementation and controls. Sections 1–3 retain earlier M0 design and device notes; section 4 and the current-behavior sections near the end describe the implemented path.
 

@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "milestone": "PR0",
+  "status": "EXPERIMENTAL",
+  "publication_status": "ready for public source; no binary release",
+  "tested_commit": "e6cc30b2c83b8fd8b590f30ee891c66f65ec52f2",
+  "tested_source_changes": [
+    ".gitmodules public fork URLs",
+    "tools/docker/build-linux.sh job limit forwarding"
+  ],
+  "supported_targets": [
+    "Steam Frame / native Linux ARM64 / SteamVR OpenXR / OpenGL through Zink"
+  ],
+  "validation": {
+    "anonymous_recursive_checkout": "PASS; empty HOME, no credentials or global/system Git config; every pinned dependency fetched",
+    "full_application_build": "PASS; ARM64 OpenXR G-Diffuser target, 575 build steps; no ROM, disk or IPL inputs",
+    "host_tests": {
+      "scheduler": 51,
+      "math": 74,
+      "system": 134,
+      "settings": 34,
+      "failed": 0
+    },
+    "abi": "PASS for application, extractor and bundled SDL2/zlib",
+    "toolchain_image": "sha256:ec30b042be5580daf5d886ca5234ccd18d8474287032ea72d837ed48c0209472",
+    "package": {
+      "name": "G-Diffuser-vpr0-linux-arm64.tar.gz",
+      "bytes": 10323306,
+      "sha256": "ab5cbd818cd1dd0e30a244143d6af538e490451f9e27d12691fbcb9463e31b70",
+      "game_data_files": 0,
+      "uploaded": false
+    }
+  },
+  "dependencies": {
+    "decomp": "3b307ffe4fe8b15ab5abff56e5eb6da9f61995cc",
+    "fzerox-expansion-kit": "6cd71e6fff1714fbfbda22d61dc8bce190d9632d",
+    "libultraship": "c8348cc8294969a6df4192b1747d2f2e08ce7628",
+    "torch": "8bdae395876b31f70c599d607c2babcb941abbd3"
+  },
+  "distribution_blockers": [],
+  "license_scope": "Original G-Diffuser MIT and component notices retained. No permission to redistribute Nintendo game data is implied.",
+  "changelog": "CHANGELOG.md"
+}
