@@ -1,18 +1,10 @@
 # VR (OpenXR / Steam Frame) — architecture notes
 
-Status: **M0 gates passed; flat-screen and stereo-race presentation implemented and running on a
-Steam Frame** (unattended, headset in standby; not yet verified by a person wearing it). Sections 1-3
-record what the stock renderer does and what was measured; section 4 describes what was built.
+This document describes the optional OpenXR mode for Steam Frame: a native Linux ARM64 build using OpenGL through Zink, stereo race views, tracked head and controller input, cockpit and chase cameras, and an in-headset settings menu with controller and laser-pointer navigation.
 
-A minimal **in-headset VR settings page with Quit to Steam** exists (section 4, "In-headset menu"): the
-G-Diffuser menu's VR tab on the flat quad, opened by holding Menu + View for 0.5 s. It is not a full
-settings page (no tab set, no pointer, no gameplay or comfort-turn settings yet). The system layer, the
-menu, haptics, the one-shot refresh-rate request and held-rate report, the resolution scale and the `[vr-perf]` line are
-implemented but, like everything else here, none of it has been tried by a person in the headset.
+Section 4 describes the current implementation. The current system, display and menu behavior is documented in the later sections on display and the in-headset menu. Sections 1–3 retain the earlier M0 renderer study and device notes; read them as design history, not as the current feature list.
 
-Target: optional OpenXR output mode (`GDX_OPENXR=ON` at build time, `--vr` / `GDX_VR=1` at launch)
-running natively on Steam Frame (Linux ARM64). Desktop behaviour with VR off must stay
-bit-identical, and `decomp/` changes must keep the retail build matching (see CONTRIBUTING.md).
+Build with `-DGDX_OPENXR=ON` and launch with `--vr` or `GDX_VR=1`. Flat mode remains the default. See the [root README](../README.md) for player controls, game-data requirements and the concise build command.
 
 ---
 
